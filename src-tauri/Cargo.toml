@@ -1,0 +1,32 @@
+[package]
+name = "digitglance"
+version = "1.0.0"
+description = "DigitGlance — unified desktop app (Invoice, POS & Books)"
+authors = ["Digitglance Reliance"]
+edition = "2021"
+rust-version = "1.77.2"
+
+# The library that main.rs calls into. Keeping the app logic in a lib lets the
+# same code target desktop and (later) mobile from one entry point.
+[lib]
+name = "digitglance_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+# Smaller, faster-to-ship installers: strip symbols, optimise for size, and
+# enable LTO. A thin remote-shell binary doesn't need debug symbols.
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

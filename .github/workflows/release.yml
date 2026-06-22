@@ -1,0 +1,78 @@
+name: Release
+
+# Builds the DigitGlance desktop installers (Tauri) for Windows + macOS and
+# publishes them — plus the signed auto-update feed — to a DRAFT GitHub Release
+# in THIS public repo. Source for the rest of the product stays in the private
+# `digitglance` repo; only the (non-sensitive) desktop shell lives here so the
+# installers and update feed can be downloaded anonymously.
+#
+# Trigger by pushing a tag `v<semver>` (e.g. v1.0.0), or run manually.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: meta
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=v0.0.0-dev-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install JS deps
+        run: npm install
+
+      - name: Generate app icons
+        run: npx tauri icon assets/icon-source.png
+
+      - name: Build & draft release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater signing key — signs update artifacts and generates
+          # latest.json so installed apps can verify and auto-update.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # NOTE: OS code-signing is still UNSIGNED for now. Do NOT add empty
+          # APPLE_* env vars here — Tauri's macOS bundler then fails at
+          # `security import`. Add them only once real certificates exist.
+        with:
+          projectPath: .
+          tagName: ${{ steps.meta.outputs.tag }}
+          releaseName: DigitGlance Desktop ${{ steps.meta.outputs.tag }}
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.platform == 'macos-latest' && '--target universal-apple-darwin' || '' }}

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Minimal core permissions for the shell window. No filesystem, shell, HTTP or other privileged APIs are exposed, and the remote web origin is deliberately NOT granted any IPC access.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

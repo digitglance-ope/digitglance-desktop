@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DigitGlance</title>
+    <!--
+      Connectivity gate. The native window opens here (a local, always-available
+      page) rather than straight at the remote app. On launch it probes for
+      connectivity and, when online, redirects to the live all-products hub. When
+      offline it shows a branded screen with auto-retry + a manual retry, instead
+      of the WebView's raw error page. This is how the desktop app handles the
+      "launched while offline" case gracefully.
+    -->
+    <style>
+      :root { color-scheme: light; }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #f7faf9;
+        color: #0f1b1b;
+      }
+      .wrap { text-align: center; padding: 32px; max-width: 380px; }
+      .mark {
+        width: 72px; height: 72px; border-radius: 18px; margin: 0 auto 20px;
+        background: #fff; box-shadow: 0 8px 30px rgba(14,131,131,0.15);
+        display: flex; align-items: center; justify-content: center;
+      }
+      h1 { font-size: 20px; margin: 0 0 6px; letter-spacing: -0.02em; }
+      p { margin: 0; color: #5b6b6b; font-size: 14px; line-height: 1.5; }
+      .spinner {
+        margin: 22px auto 0; width: 26px; height: 26px; border-radius: 50%;
+        border: 3px solid #d7e6e4; border-top-color: #0e8383;
+        animation: spin 0.8s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      button {
+        margin-top: 22px; border: 0; border-radius: 10px; cursor: pointer;
+        background: #0e8383; color: #fff; font-size: 14px; font-weight: 600;
+        padding: 10px 20px; font-family: inherit;
+      }
+      button:hover { background: #0c7373; }
+      button:disabled { opacity: 0.6; cursor: default; }
+      .hidden { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="mark">
+        <svg width="44" height="44" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M 12 10 H 32 C 44 10 56 20 56 32 C 56 44 44 54 32 54 H 12 Z M 22 18 V 46 H 32 C 41 46 48 39 48 32 C 48 25 41 18 32 18 H 22 Z" fill="#0E8383" fill-rule="evenodd" />
+          <circle cx="51" cy="51" r="6" fill="#37D200" />
+        </svg>
+      </div>
+      <h1>DigitGlance</h1>
+
+      <!-- Connecting state -->
+      <div id="connecting">
+        <p>Connecting to your workspace…</p>
+        <div class="spinner" role="status" aria-label="Loading"></div>
+      </div>
+
+      <!-- Offline state -->
+      <div id="offline" class="hidden">
+        <p><strong>You're offline.</strong><br />DigitGlance needs an internet
+          connection. We'll reconnect automatically as soon as you're back online.</p>
+        <button id="retry" type="button">Try again</button>
+      </div>
+    </div>
+
+    <script>
+      (function () {
+        var APP_URL = "https://digitglance.com/app/dashboard";
+        var PROBE_URL = "https://digitglance.com/favicon.ico";
+        var connectingEl = document.getElementById("connecting");
+        var offlineEl = document.getElementById("offline");
+        var retryBtn = document.getElementById("retry");
+        var retryTimer = null;
+
+        function showConnecting() {
+          offlineEl.classList.add("hidden");
+          connectingEl.classList.remove("hidden");
+        }
+        function showOffline() {
+          connectingEl.classList.add("hidden");
+          offlineEl.classList.remove("hidden");
+        }
+
+        // Probe connectivity with a short timeout. A no-cors request returns an
+        // opaque response when the server is reachable and throws when it isn't,
+        // which is all we need to decide online vs offline.
+        function isReachable() {
+          var controller = new AbortController();
+          var t = setTimeout(function () { controller.abort(); }, 6000);
+          return fetch(PROBE_URL, {
+            method: "GET",
+            mode: "no-cors",
+            cache: "no-store",
+            signal: controller.signal,
+          })
+            .then(function () { clearTimeout(t); return true; })
+            .catch(function () { clearTimeout(t); return false; });
+        }
+
+        function attempt() {
+          showConnecting();
+          if (retryBtn) retryBtn.disabled = true;
+          isReachable().then(function (ok) {
+            if (ok) {
+              window.location.replace(APP_URL);
+            } else {
+              showOffline();
+              if (retryBtn) retryBtn.disabled = false;
+              // Auto-retry while offline.
+              clearTimeout(retryTimer);
+              retryTimer = setTimeout(attempt, 5000);
+            }
+          });
+        }
+
+        if (retryBtn) {
+          retryBtn.addEventListener("click", function () {
+            clearTimeout(retryTimer);
+            attempt();
+          });
+        }
+        // Re-probe immediately when the OS reports the network is back.
+        window.addEventListener("online", function () {
+          clearTimeout(retryTimer);
+          attempt();
+        });
+
+        attempt();
+      })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,12 @@
+# Rust / Tauri build output
+src-tauri/target/
+
+# Generated icon set — produced from ../assets/icon-source.png by `npm run icons`
+# (or the release workflow). Not committed; regenerated deterministically.
+src-tauri/icons/
+
+# JS deps
+node_modules/
+
+# Tauri generated schema/types
+src-tauri/gen/

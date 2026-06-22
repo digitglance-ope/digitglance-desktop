@@ -1,0 +1,65 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "DigitGlance",
+  "version": "1.0.0",
+  "identifier": "com.digitglance.desktop",
+  "build": {
+    "frontendDist": "../dist",
+    "beforeBuildCommand": "",
+    "beforeDevCommand": ""
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "DigitGlance",
+        "url": "index.html",
+        "width": 1320,
+        "height": 880,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true,
+        "center": true,
+        "fullscreen": false,
+        "decorations": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "targets": ["nsis", "app", "dmg"],
+    "publisher": "Digitglance Reliance",
+    "category": "Business",
+    "shortDescription": "Invoicing, POS & accounting for Nigerian businesses.",
+    "longDescription": "DigitGlance — one app for Invoice, POS and Books, plus the DigitGlance AI assistant. Sign in once and switch between the products you subscribe to: branded invoicing and payments, a retail point of sale, full double-entry accounting, NRS-ready VAT, multi-company support and more — the full DigitGlance web app in a dedicated, secure native window.",
+    "homepage": "https://digitglance.com",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/digitglance-ope/digitglance-desktop/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ0MEU2QUZFM0M0QTZGQ0EKUldUS2IwbzgvbW9PUkZjMzdtTUR3Qk5uZTE3c3J6OGovUXk1YVNIMThhV1o5N3Izcnpja1lWS1YK"
+    }
+  }
+}
