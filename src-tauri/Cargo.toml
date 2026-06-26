@@ -1,6 +1,6 @@
 [package]
 name = "digitglance"
-version = "1.0.0"
+version = "1.0.1"
 description = "DigitGlance — unified desktop app (Invoice, POS & Books)"
 authors = ["Digitglance Reliance"]
 edition = "2021"
