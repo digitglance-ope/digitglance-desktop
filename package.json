@@ -7,7 +7,10 @@
     "icons": "tauri icon assets/icon-source.png",
     "dev": "tauri dev",
     "build": "tauri build",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "android:init": "tauri android init --config src-tauri/tauri.android.conf.json",
+    "android:dev": "tauri android dev --config src-tauri/tauri.android.conf.json",
+    "android:build": "tauri android build --aab --config src-tauri/tauri.android.conf.json"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"
