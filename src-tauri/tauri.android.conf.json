@@ -1,0 +1,5 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "//": "Android-only overrides, merged over tauri.conf.json via `tauri android <cmd> --config src-tauri/tauri.android.conf.json`. The DESKTOP identifier (com.digitglance.desktop) is used by the desktop updater, so we give the mobile build its own applicationId here instead of changing the shared one. NOTE: the Play Store applicationId is PERMANENT once published — confirm this value before the first upload.",
+  "identifier": "com.digitglance.app"
+}

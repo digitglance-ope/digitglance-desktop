@@ -1,0 +1,116 @@
+name: Android (Play Store AAB)
+
+# Builds a Play-Store-ready Android App Bundle (.aab) for the DigitGlance app
+# (the same Tauri shell as the desktop build, targeting Android). Produces a
+# SIGNED .aab as a downloadable artifact you then upload to the Play Console.
+#
+# This is intentionally a separate workflow from release.yml (desktop) — the
+# Android toolchain (SDK / NDK / JDK) is heavy and the cadence is different.
+#
+# Trigger: run manually (workflow_dispatch) or push a tag `android-v<semver>`.
+#
+# Required repo secrets for SIGNING (see ANDROID_BUILD.md):
+#   ANDROID_KEYSTORE_BASE64   — base64 of your upload keystore (.jks)
+#   ANDROID_KEYSTORE_PASSWORD — keystore (store) password
+#   ANDROID_KEY_ALIAS         — key alias inside the keystore
+#   ANDROID_KEY_PASSWORD      — key password
+# Without these the build still runs and uploads an UNSIGNED .aab (not
+# uploadable to Play, but useful for verifying the build).
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "android-v*"
+
+env:
+  # NDK pinned for reproducible builds. Bump deliberately.
+  ANDROID_NDK_VERSION: "26.1.10909125"
+  HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK + platform + build-tools
+        run: |
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;${ANDROID_NDK_VERSION}"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Setup Rust (with Android targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install JS deps
+        run: npm install
+
+      - name: Initialise the Android project
+        # gen/android is gitignored and regenerated here from tauri.conf.json +
+        # the Android override (clean mobile applicationId) + the icon set.
+        run: npx tauri android init --ci --config src-tauri/tauri.android.conf.json
+
+      - name: Build the AAB (release)
+        run: npx tauri android build --aab --config src-tauri/tauri.android.conf.json
+
+      - name: Locate the AAB
+        id: aab
+        run: |
+          AAB=$(find src-tauri/gen/android -name "*.aab" | head -n1)
+          if [ -z "$AAB" ]; then echo "No .aab produced"; exit 1; fi
+          echo "path=$AAB" >> "$GITHUB_OUTPUT"
+          echo "Found AAB: $AAB"
+
+      - name: Sign the AAB
+        if: env.HAS_KEYSTORE == 'true'
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > upload.keystore
+          jarsigner -verbose \
+            -sigalg SHA256withRSA -digestalg SHA-256 \
+            -keystore upload.keystore \
+            -storepass "$STORE_PASS" -keypass "$KEY_PASS" \
+            "${{ steps.aab.outputs.path }}" "$KEY_ALIAS"
+          jarsigner -verify "${{ steps.aab.outputs.path }}" && echo "AAB signature verified"
+          rm -f upload.keystore
+
+      - name: Warn if unsigned
+        if: env.HAS_KEYSTORE != 'true'
+        run: echo "::warning::No signing secrets configured — the uploaded AAB is UNSIGNED and cannot be submitted to Play. See ANDROID_BUILD.md."
+
+      - name: Upload AAB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: digitglance-android-aab
+          path: ${{ steps.aab.outputs.path }}
+          if-no-files-found: error

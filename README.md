@@ -1,6 +1,7 @@
 # DigitGlance Desktop
 
-Public **distribution** repo for the DigitGlance desktop app (Windows + macOS).
+Public **distribution** repo for the DigitGlance desktop app (Windows + macOS),
+plus the **Android** (Play Store) build of the same Tauri shell.
 
 It holds only the **non-sensitive desktop shell** (a [Tauri 2](https://tauri.app)
 wrapper around the live web app) and the **published installers + auto-update
@@ -34,6 +35,14 @@ npm install
 npm run icons     # generate the icon set from assets/icon-source.png
 npm run build     # or: npm run dev
 ```
+
+### Android (Play Store)
+
+The same shell also builds an Android **App Bundle (`.aab`)** for the Play Store
+via [`.github/workflows/android.yml`](.github/workflows/android.yml). See
+[**ANDROID_BUILD.md**](ANDROID_BUILD.md) for the keystore setup, required secrets,
+and submission notes. The mobile build uses its own `applicationId`
+(`com.digitglance.app`) so it stays independent of the desktop updater identifier.
 
 ### Signing
 
