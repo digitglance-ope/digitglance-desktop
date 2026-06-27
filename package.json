@@ -1,7 +1,7 @@
 {
   "name": "digitglance-desktop",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "DigitGlance — unified native desktop shell (Tauri) around the live web app (Invoice, POS & Books).",
   "scripts": {
     "icons": "tauri icon assets/icon-source.png",
