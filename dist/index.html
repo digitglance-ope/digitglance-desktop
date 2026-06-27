@@ -25,12 +25,10 @@
         color: #0f1b1b;
       }
       .wrap { text-align: center; padding: 32px; max-width: 380px; }
-      .mark {
-        width: 72px; height: 72px; border-radius: 18px; margin: 0 auto 20px;
-        background: #fff; box-shadow: 0 8px 30px rgba(0,155,213,0.18);
-        display: flex; align-items: center; justify-content: center;
+      .logo {
+        display: block; width: 248px; max-width: 76%; height: auto;
+        margin: 0 auto 24px;
       }
-      h1 { font-size: 20px; margin: 0 0 6px; letter-spacing: -0.02em; }
       p { margin: 0; color: #5b6b6b; font-size: 14px; line-height: 1.5; }
       .spinner {
         margin: 22px auto 0; width: 26px; height: 26px; border-radius: 50%;
@@ -50,13 +48,7 @@
   </head>
   <body>
     <div class="wrap">
-      <div class="mark">
-        <svg width="44" height="44" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <path d="M 12 10 H 32 C 44 10 56 20 56 32 C 56 44 44 54 32 54 H 12 Z M 22 18 V 46 H 32 C 41 46 48 39 48 32 C 48 25 41 18 32 18 H 22 Z" fill="#009BD5" fill-rule="evenodd" />
-          <circle cx="51" cy="51" r="6" fill="#49DE35" />
-        </svg>
-      </div>
-      <h1>DigitGlance</h1>
+      <img class="logo" src="logo.png" alt="DigitGlance" width="248" />
 
       <!-- Connecting state -->
       <div id="connecting">
