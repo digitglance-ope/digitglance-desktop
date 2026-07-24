@@ -50,10 +50,11 @@ public download page until it is signed + notarised.
 
 - **Identifiers are permanent** once the updater ships. `com.digitglance.trade` /
   `.books` / `.school` are the proposed values.
-- **Per-product icons.** All three currently reuse `assets/icon-source.png`. Drop
-  `assets/<product>-icon-source.png` and repoint `icons:<product>` / the CI icon
-  step to give each app its own mark. The per-product splash logo in
-  `dist/<product>/logo.png` can also be replaced.
+- **Per-product icons.** Each app now has its own mark from
+  `assets/<product>-icon-source.png` (teal receipt for Trade, blue open book for
+  Books, green cap for School); the CI icon step falls back to the shared source
+  if a product one is missing. Replace those 1024x1024 PNGs to restyle. The
+  per-product splash logo in `dist/<product>/logo.png` can also be replaced.
 - **Landing URLs** above are sensible defaults; pin Trade to `/app/pos` or
   `/app/invoice` if you want it to skip the hub.
 - **Signing.** One updater key signs all three (already configured via the
