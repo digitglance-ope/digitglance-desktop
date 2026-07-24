@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "//": "DigitGlance SCHOOL overrides, merged over tauri.conf.json via `tauri build --config src-tauri/tauri.school.conf.json`. School is a standalone product on school.digitglance.com; this build points its gate there. Only School-specific fields live here; the rest is inherited from the shared base. The identifier is PERMANENT once the updater ships — do not change it after the first release.",
+  "productName": "DigitGlance School",
+  "version": "1.0.0",
+  "identifier": "com.digitglance.school",
+  "build": {
+    "frontendDist": "../dist/school"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "DigitGlance School",
+        "url": "index.html",
+        "width": 1320,
+        "height": 880,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true,
+        "center": true,
+        "fullscreen": false,
+        "decorations": true
+      }
+    ]
+  },
+  "bundle": {
+    "shortDescription": "Run your whole school in one place.",
+    "longDescription": "DigitGlance School — scores and WAEC-style report cards, attendance, online fee collection with branded receipts, bursary reports, and a parent portal for every family, plus the DigitGlance AI assistant drafting remarks and lesson notes. The full DigitGlance School product in a dedicated, secure native window.",
+    "icon": [
+      "icons/school/32x32.png",
+      "icons/school/128x128.png",
+      "icons/school/128x128@2x.png",
+      "icons/school/icon.icns",
+      "icons/school/icon.ico"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/digitglance-ope/digitglance-desktop/releases/download/school-latest/latest.json"
+      ]
+    }
+  }
+}

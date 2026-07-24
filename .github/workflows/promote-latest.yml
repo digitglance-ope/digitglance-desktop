@@ -1,0 +1,72 @@
+name: Promote updater manifest
+
+# Turns on auto-update for already-installed apps of one product.
+#
+# Each product's Tauri updater checks a STABLE endpoint:
+#   .../releases/download/<product>-latest/latest.json
+# but the versioned release CI (release-products.yml) publishes latest.json under
+# the VERSIONED tag (e.g. trade-v1.0.1). This workflow copies that latest.json
+# into a moving `<product>-latest` release so the stable endpoint always serves
+# the newest manifest. The manifest's internal installer URLs keep pointing at
+# the versioned release assets (which are public once you publish that release),
+# so nothing else needs to move.
+#
+# Run this AFTER you have reviewed and PUBLISHED the versioned draft release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      product:
+        description: Product
+        required: true
+        type: choice
+        options: [trade, books, school]
+      version_tag:
+        description: Published versioned tag to promote (e.g. trade-v1.0.1)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Copy latest.json to <product>-latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PRODUCT: ${{ github.event.inputs.product }}
+          SRC_TAG: ${{ github.event.inputs.version_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          MOVING="${PRODUCT}-latest"
+
+          # Guard: the source tag must belong to this product.
+          case "$SRC_TAG" in
+            "${PRODUCT}-v"*) : ;;
+            *) echo "::error::Tag '$SRC_TAG' does not match product '$PRODUCT'"; exit 1 ;;
+          esac
+
+          # The source release must be published (not a draft) so its assets are
+          # publicly downloadable by the updater.
+          if gh release view "$SRC_TAG" --repo "$REPO" --json isDraft -q '.isDraft' | grep -qi true; then
+            echo "::error::Release '$SRC_TAG' is still a draft. Publish it first, then re-run."
+            exit 1
+          fi
+
+          mkdir -p _promote
+          gh release download "$SRC_TAG" --repo "$REPO" --pattern "latest.json" --dir _promote --clobber
+
+          # Create the moving release if it doesn't exist yet, then replace its
+          # manifest in place.
+          if ! gh release view "$MOVING" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$MOVING" --repo "$REPO" \
+              --title "$PRODUCT auto-update manifest" \
+              --notes "Moving pointer to the current $PRODUCT updater manifest. Managed by CI; do not edit." \
+              --latest=false
+          fi
+          gh release upload "$MOVING" --repo "$REPO" _promote/latest.json --clobber
+          echo "Promoted $SRC_TAG -> $MOVING/latest.json"
