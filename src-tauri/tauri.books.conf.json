@@ -1,6 +1,5 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "//": "DigitGlance BOOKS overrides, merged over tauri.conf.json via `tauri build --config src-tauri/tauri.books.conf.json`. Only Books-specific fields live here; the rest is inherited from the shared base. The identifier is PERMANENT once the updater ships — do not change it after the first release.",
   "productName": "DigitGlance Books",
   "version": "1.0.0",
   "identifier": "com.digitglance.books",

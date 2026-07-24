@@ -1,6 +1,5 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "//": "DigitGlance TRADE overrides, merged over tauri.conf.json via `tauri build --config src-tauri/tauri.trade.conf.json`. Only the Trade-specific fields live here; everything else (security, single-instance, updater plugin + pubkey, bundle targets) is inherited from the shared base. The identifier is PERMANENT once the updater ships — do not change it after the first release.",
   "productName": "DigitGlance Trade",
   "version": "1.0.0",
   "identifier": "com.digitglance.trade",
