@@ -5,9 +5,9 @@
   "description": "DigitGlance — native desktop shells (Tauri) for each product: Trade, Books and School.",
   "scripts": {
     "icons": "tauri icon assets/icon-source.png",
-    "icons:trade": "tauri icon assets/icon-source.png -o src-tauri/icons/trade",
-    "icons:books": "tauri icon assets/icon-source.png -o src-tauri/icons/books",
-    "icons:school": "tauri icon assets/icon-source.png -o src-tauri/icons/school",
+    "icons:trade": "tauri icon assets/trade-icon-source.png -o src-tauri/icons/trade",
+    "icons:books": "tauri icon assets/books-icon-source.png -o src-tauri/icons/books",
+    "icons:school": "tauri icon assets/school-icon-source.png -o src-tauri/icons/school",
     "dev": "tauri dev",
     "dev:trade": "tauri dev --config src-tauri/tauri.trade.conf.json",
     "dev:books": "tauri dev --config src-tauri/tauri.books.conf.json",

@@ -96,11 +96,14 @@ jobs:
         run: npm install
 
       - name: Generate app icons
-        # Per-product icon set. Reuses the shared source for now; drop a
-        # dedicated assets/<product>-icon-source.png and point this at it to give
-        # each app its own mark.
+        # Per-product icon set from assets/<product>-icon-source.png, falling
+        # back to the shared source if a product one is missing.
         shell: bash
-        run: npx tauri icon assets/icon-source.png -o "src-tauri/icons/${{ steps.meta.outputs.product }}"
+        run: |
+          SRC="assets/${{ steps.meta.outputs.product }}-icon-source.png"
+          [ -f "$SRC" ] || SRC="assets/icon-source.png"
+          echo "Using icon source: $SRC"
+          npx tauri icon "$SRC" -o "src-tauri/icons/${{ steps.meta.outputs.product }}"
 
       - name: Build & draft release
         uses: tauri-apps/tauri-action@v0
