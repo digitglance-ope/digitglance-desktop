@@ -1,6 +1,5 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "//": "DigitGlance SCHOOL overrides, merged over tauri.conf.json via `tauri build --config src-tauri/tauri.school.conf.json`. School is a standalone product on school.digitglance.com; this build points its gate there. Only School-specific fields live here; the rest is inherited from the shared base. The identifier is PERMANENT once the updater ships — do not change it after the first release.",
   "productName": "DigitGlance School",
   "version": "1.0.0",
   "identifier": "com.digitglance.school",
