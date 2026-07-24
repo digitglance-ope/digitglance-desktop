@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "//": "DigitGlance BOOKS overrides, merged over tauri.conf.json via `tauri build --config src-tauri/tauri.books.conf.json`. Only Books-specific fields live here; the rest is inherited from the shared base. The identifier is PERMANENT once the updater ships — do not change it after the first release.",
+  "productName": "DigitGlance Books",
+  "version": "1.0.0",
+  "identifier": "com.digitglance.books",
+  "build": {
+    "frontendDist": "../dist/books"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "DigitGlance Books",
+        "url": "index.html",
+        "width": 1320,
+        "height": 880,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true,
+        "center": true,
+        "fullscreen": false,
+        "decorations": true
+      }
+    ]
+  },
+  "bundle": {
+    "shortDescription": "Double-entry accounting for Nigerian businesses.",
+    "longDescription": "DigitGlance Books — full double-entry accounting with a general ledger that stays balanced, financial statements that build themselves, VAT and WHT schedules, multi-company support, and the DigitGlance AI assistant drafting entries for your approval. The full DigitGlance Books product in a dedicated, secure native window.",
+    "icon": [
+      "icons/books/32x32.png",
+      "icons/books/128x128.png",
+      "icons/books/128x128@2x.png",
+      "icons/books/icon.icns",
+      "icons/books/icon.ico"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/digitglance-ope/digitglance-desktop/releases/download/books-latest/latest.json"
+      ]
+    }
+  }
+}

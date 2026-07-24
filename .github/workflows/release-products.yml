@@ -1,0 +1,123 @@
+name: Release (per product)
+
+# Builds ONE product's DigitGlance desktop installer (Tauri) for Windows +
+# macOS and publishes it — plus the signed auto-update feed — to a DRAFT GitHub
+# Release in this public repo. There are three products, each with its own
+# release stream distinguished by the tag prefix:
+#
+#   trade-v<semver>   ->  DigitGlance Trade   (com.digitglance.trade)
+#   books-v<semver>   ->  DigitGlance Books   (com.digitglance.books)
+#   school-v<semver>  ->  DigitGlance School  (com.digitglance.school)
+#
+# All three share this one Tauri shell; the product-specific window title,
+# identifier, icons, landing URL (dist/<product>/index.html) and updater
+# endpoint come from src-tauri/tauri.<product>.conf.json, merged over the base
+# tauri.conf.json at build time.
+#
+# Trigger by pushing a product tag (e.g. trade-v1.0.0), or run manually and pick
+# the product. The release is left as a DRAFT so it can be reviewed and
+# published deliberately; the marketing site's /download picks it up once it is
+# published (it matches the "<product>-v" tag). To turn on auto-update for
+# already-installed apps, run the "Promote updater manifest" workflow after
+# publishing (see promote-latest.yml).
+
+on:
+  push:
+    tags:
+      - "trade-v*"
+      - "books-v*"
+      - "school-v*"
+  workflow_dispatch:
+    inputs:
+      product:
+        description: Product to build
+        required: true
+        type: choice
+        options: [trade, books, school]
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve product, tag and build args
+        id: meta
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            PRODUCT="${{ github.event.inputs.product }}"
+            TAG="${PRODUCT}-v0.0.0-dev-${{ github.run_number }}"
+          else
+            TAG="${GITHUB_REF_NAME}"          # e.g. trade-v1.0.0
+            PRODUCT="${TAG%%-v*}"             # e.g. trade
+          fi
+          case "$PRODUCT" in
+            trade) NAME="DigitGlance Trade" ;;
+            books) NAME="DigitGlance Books" ;;
+            school) NAME="DigitGlance School" ;;
+            *) echo "::error::Unknown product '$PRODUCT' from tag '$TAG'"; exit 1 ;;
+          esac
+          ARGS="--config src-tauri/tauri.${PRODUCT}.conf.json"
+          if [ "${{ matrix.platform }}" = "macos-latest" ]; then
+            ARGS="$ARGS --target universal-apple-darwin"
+          fi
+          {
+            echo "product=$PRODUCT"
+            echo "tag=$TAG"
+            echo "name=$NAME"
+            echo "args=$ARGS"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ${{ steps.meta.outputs.product }}
+
+      - name: Install JS deps
+        run: npm install
+
+      - name: Generate app icons
+        # Per-product icon set. Reuses the shared source for now; drop a
+        # dedicated assets/<product>-icon-source.png and point this at it to give
+        # each app its own mark.
+        shell: bash
+        run: npx tauri icon assets/icon-source.png -o "src-tauri/icons/${{ steps.meta.outputs.product }}"
+
+      - name: Build & draft release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater signing key — signs update artifacts and generates
+          # latest.json so installed apps can verify and auto-update. The same
+          # key signs all three products.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # NOTE: OS code-signing is still UNSIGNED for now. Do NOT add empty
+          # APPLE_* env vars here — Tauri's macOS bundler then fails at
+          # `security import`. Add them only once real certificates exist.
+        with:
+          projectPath: .
+          tagName: ${{ steps.meta.outputs.tag }}
+          releaseName: ${{ steps.meta.outputs.name }} ${{ steps.meta.outputs.tag }}
+          releaseDraft: true
+          prerelease: false
+          args: ${{ steps.meta.outputs.args }}
