@@ -66,7 +66,23 @@
 
     <script>
       (function () {
-        var APP_URL = "https://digitglance.com/app";
+        // `?client=trade-desktop` tells the web app which product this window
+        // was sold as. It is consumed ONCE: middleware validates it against an
+        // allowlist, stores it in a cookie and redirects to the clean URL, so
+        // the marker never rides in later links. From then on the web app
+        // hides cross-product switching and refuses to render Books here.
+        //
+        // Sent on the launch URL rather than in the User-Agent because Tauri
+        // REPLACES the UA instead of appending to it (unlike the mobile
+        // WebView), and a hardcoded UA would differ per OS and risk breaking
+        // the payment gateways. Keep the value in sync with SHELL_CLIENTS in
+        // the platform repo's src/lib/app-shell.ts.
+        // /app/dashboard, not bare /app: the latter is not a route and used to
+        // 404 for an already-signed-in user on launch. The hub then auto-routes
+        // a locked shell straight into its own product, which is also what
+        // makes this correct for invoicing-only plans (they must not be sent to
+        // a POS-gated surface).
+        var APP_URL = "https://digitglance.com/app/dashboard?client=trade-desktop";
         var PROBE_URL = "https://digitglance.com/favicon.ico";
         var connectingEl = document.getElementById("connecting");
         var offlineEl = document.getElementById("offline");

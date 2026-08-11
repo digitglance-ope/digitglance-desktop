@@ -1,10 +1,20 @@
-// DigitGlance — unified desktop shell.
+// DigitGlance — desktop shell.
 //
-// This is a thin, hardened native wrapper around the live web app
-// (https://digitglance.com/app/dashboard — the all-products hub). One app
-// covers every product (Invoice, POS, Books) and all AI features: the user
-// signs in once and switches products inside the same window, seeing only the
-// products they subscribe to.
+// This is a thin, hardened native wrapper around the live web app. ONE shell
+// builds THREE separate single-product apps, each sold on its own: DigitGlance
+// Trade, DigitGlance Books and DigitGlance School. The product-specific window
+// title, bundle identifier, icons, landing page and updater feed all come from
+// `tauri.<product>.conf.json`, merged over the base `tauri.conf.json` at build
+// time (see .github/workflows/release-products.yml).
+//
+// Product isolation is deliberate and must not regress: the app badged
+// "DigitGlance Trade" must never become a second front door into Books. Each
+// launcher page under `dist/<product>/` announces its product to the web app
+// with `?client=<product>-desktop` on the launch URL, and the platform then
+// hides cross-product switching and refuses to render the other product. That
+// signal rides in the URL rather than the User-Agent because Tauri REPLACES
+// the UA instead of appending to it. School needs none of it: it runs on its
+// own origin with its own auth, so it is isolated by construction.
 //
 // The window, its start URL and the security policy are declared in
 // `tauri.conf.json`; everything the products do — authentication, RLS/tenant
