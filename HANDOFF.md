@@ -25,8 +25,13 @@ like the old unified app, but branded and locked to a single product.
   published release's `latest.json` into the moving `<product>-latest` release.
 - **`package.json`** — `dev:<product>`, `build:<product>`, `icons:<product>`.
 
-The old `release.yml` (`v*` tags, unified app) is superseded and can be removed
-once the three streams are live.
+The old `release.yml` (`v*` tags, unified app) has been REMOVED, now that all
+three streams are live. It built a single all-products app that opened on the
+web hub, which is exactly the cross-product leak the per-product split exists to
+prevent — so leaving it dispatchable meant one stray `v*` tag could ship an app
+that bypassed the isolation. Nothing was ever published from it (no `v*` tag or
+release existed), so no such app is installed anywhere. Recover it from git
+history if the unified app is ever wanted back.
 
 ## Build a product
 

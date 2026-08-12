@@ -24,16 +24,36 @@ page, or from **https://digitglance.com/download**.
 
 ## Build & release
 
-Installers are built in CI by [`.github/workflows/release.yml`](.github/workflows/release.yml).
-Push a tag `v<semver>` (e.g. `v1.0.0`) to build Windows + macOS installers and a
-signed update feed (`latest.json`) into a **draft** GitHub Release for review.
+This one shell builds **three separate single-product apps** — DigitGlance Trade,
+DigitGlance Books and DigitGlance School — each with its own window title, bundle
+identifier, icons, landing page and update feed, taken from
+`src-tauri/tauri.<product>.conf.json` merged over the base `tauri.conf.json`.
+
+Installers are built in CI by
+[`.github/workflows/release-products.yml`](.github/workflows/release-products.yml).
+Push a product tag `<product>-v<semver>` (e.g. `trade-v1.0.2`) to build Windows +
+macOS installers and a signed update feed (`latest.json`) into a **draft** GitHub
+Release for review.
+
+Shipping takes three steps, not one — a tag alone reaches nobody:
+
+1. **Tag** `<product>-v<semver>` → CI drafts the release.
+2. **Publish** the draft (`gh release edit <tag> --draft=false`) so the assets are
+   downloadable and the marketing site's `/download` can see them.
+3. **Promote** the manifest — run **Promote updater manifest** with that tag. This
+   is the step that updates already-installed apps, because each app polls the
+   stable `<product>-latest/latest.json` endpoint, not the versioned one.
+
+Products stay isolated: each app is sold on its own and announces which one it is
+with `?client=<product>-desktop` on its landing URL, so the web app hides
+cross-product switching and refuses to render the others. See `src-tauri/src/lib.rs`.
 
 Local build:
 
 ```bash
 npm install
-npm run icons     # generate the icon set from assets/icon-source.png
-npm run build     # or: npm run dev
+npm run icons:trade    # generate that product's icon set
+npm run build:trade    # or :books / :school — or npm run dev:trade
 ```
 
 ### Android (Play Store)
