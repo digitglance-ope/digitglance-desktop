@@ -4,7 +4,7 @@ name: Android (Play Store AAB)
 # (the same Tauri shell as the desktop build, targeting Android). Produces a
 # SIGNED .aab as a downloadable artifact you then upload to the Play Console.
 #
-# This is intentionally a separate workflow from release.yml (desktop) — the
+# This is intentionally a separate workflow from release-products.yml (desktop) — the
 # Android toolchain (SDK / NDK / JDK) is heavy and the cadence is different.
 #
 # Trigger: run manually (workflow_dispatch) or push a tag `android-v<semver>`.

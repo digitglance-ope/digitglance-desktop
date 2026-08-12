@@ -1,8 +1,13 @@
 # Building the DigitGlance Android app (Play Store AAB)
 
-This repo's Tauri shell targets **desktop** (Windows/macOS via `release.yml`) **and
-Android**. This guide covers producing a signed **Android App Bundle (`.aab`)** for
-the Google Play Store.
+This repo's Tauri shell targets **desktop** (Windows/macOS via
+`release-products.yml`) **and Android**. This guide covers producing a signed
+**Android App Bundle (`.aab`)** for the Google Play Store.
+
+Note: the DigitGlance **Trade** Android app that ships on Google Play is built
+from Expo/EAS in the platform repo's `mobile/` directory, not from this Tauri
+shell. This workflow exists for the Tauri Android target and uses its own
+`applicationId`, so the two never collide.
 
 > **Why a build machine / CI, not your laptop alone:** an Android release needs the
 > Android SDK + NDK + JDK 17 and a signing keystore. The
