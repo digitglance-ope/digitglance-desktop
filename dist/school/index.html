@@ -102,7 +102,12 @@
 
     <script>
       (function () {
-        var APP_URL = "https://school.digitglance.com/app";
+        // Sign-in, not the bare /app (which has no page) and never sign-up:
+        // a school account is an institutional licence contracted on the web.
+        // ?client=school-desktop tells the web app it is running in this shell,
+        // which hides account creation and every billing surface. The web app
+        // converts it to a cookie on first load and strips it from the URL.
+        var APP_URL = "https://school.digitglance.com/app/login?client=school-desktop";
         var PROBE_URL = "https://school.digitglance.com/favicon.ico";
         var MIN_SPLASH_MS = 1800; // let the intro animation play through
         var connectingEl = document.getElementById("connecting");

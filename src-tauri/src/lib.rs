@@ -13,8 +13,12 @@
 // with `?client=<product>-desktop` on the launch URL, and the platform then
 // hides cross-product switching and refuses to render the other product. That
 // signal rides in the URL rather than the User-Agent because Tauri REPLACES
-// the UA instead of appending to it. School needs none of it: it runs on its
-// own origin with its own auth, so it is isolated by construction.
+// the UA instead of appending to it. School runs on its own origin with its own
+// auth, so it needs no help staying isolated, but it carries
+// `?client=school-desktop` for a different reason: DigitGlance School is
+// licensed to a school as an institution and sold only on the web, so the web
+// app uses that signal to hide account creation and every billing surface in
+// this shell (Apple 3.1.1 / 3.1.3(c), Google Play billing).
 //
 // The window, its start URL and the security policy are declared in
 // `tauri.conf.json`; everything the products do — authentication, RLS/tenant
