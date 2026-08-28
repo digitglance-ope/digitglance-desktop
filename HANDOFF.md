@@ -9,7 +9,7 @@ like the old unified app, but branded and locked to a single product.
 |-----|------------------------|----------|-------------|----------------------|
 | DigitGlance Trade | `com.digitglance.trade` | `https://digitglance.com/app` | `trade-v*` | `trade-latest` |
 | DigitGlance Books | `com.digitglance.books` | `https://digitglance.com/app/accounting` | `books-v*` | `books-latest` |
-| DigitGlance School | `com.digitglance.school` | `https://school.digitglance.com/app` | `school-v*` | `school-latest` |
+| DigitGlance School | `com.digitglance.school` | `https://school.digitglance.com/app/login?client=school-desktop` | `school-v*` | `school-latest` |
 
 ## What changed
 
@@ -19,6 +19,11 @@ like the old unified app, but branded and locked to a single product.
   pattern the Android config already uses.
 - **`dist/<product>/index.html`** — the connectivity gate per product, carrying
   that product's title and landing URL. Offline behaviour is unchanged.
+  School lands on the **sign-in form**, never sign-up, and carries
+  `?client=school-desktop`: DigitGlance School is licensed to a school as an
+  institution and sold only on the web, so the web app reads that signal to hide
+  account creation and every billing surface in the shell. Do not drop the param,
+  and do not point School at a marketing or sign-up page.
 - **`.github/workflows/release-products.yml`** — builds one product (derived from
   the pushed tag) for Windows + macOS and drafts a per-product release.
 - **`.github/workflows/promote-latest.yml`** — turns on auto-update by copying a
