@@ -10,3 +10,9 @@ node_modules/
 
 # Tauri generated schema/types
 src-tauri/gen/
+
+# Per-run version pin written by .github/workflows/store-msix.yml
+src-tauri/tauri.version.gen.json
+
+# Local MSIX layouts/packages (scripts/msix)
+build/msix/

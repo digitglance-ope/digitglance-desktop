@@ -1,0 +1,334 @@
+name: Microsoft Store (MSIX)
+
+# Builds ONE product as an MSIX package for the Microsoft Store, plus a
+# sideload TEST package for trying it on a real machine first.
+#
+# Why MSIX: the Store re-signs MSIX packages with a Microsoft certificate when
+# it publishes them, so we do not need to buy a code-signing certificate. (MSI
+# or EXE submissions must be Authenticode-signed by us.) See docs/STORE.md.
+#
+# Tauri's bundler has no MSIX target, so this workflow:
+#   1. builds the plain app binary with the Store overlay
+#      (src-tauri/tauri.store.conf.json + `--features store`, which leaves the
+#      Tauri self-updater out: the Store delivers updates),
+#   2. assembles a package layout (AppxManifest.xml + logo assets generated
+#      from assets/<product>-icon-source.png) with scripts/msix/cli.mjs,
+#   3. runs `makeappx pack` from the Windows SDK on the runner.
+#
+# Artifacts (per architecture):
+#   <product>-<version>-<arch>-store.msix   UNSIGNED, upload to Partner Center.
+#                                           Built only once the Store identity
+#                                           (repo variables, see below) is set.
+#   <product>-<version>-<arch>-test.msix    TEST ONLY: signed with a throwaway
+#   + <product>-TEST-ONLY.cer               self-signed certificate made in this
+#                                           run; import the .cer to sideload.
+# With include_arm64, an x64+arm64 <product>-<version>-store.msixbundle too.
+#
+# Store identity comes from Partner Center (App > Product management > Product
+# identity). Set these repository VARIABLES (Settings > Secrets and variables >
+# Actions > Variables), or fill msix/store-identity.json:
+#   MSIX_PUBLISHER               Package/Identity/Publisher  ("CN=...")
+#   MSIX_PUBLISHER_DISPLAY_NAME  Package/Properties/PublisherDisplayName
+#   MSIX_TRADE_IDENTITY_NAME / MSIX_BOOKS_IDENTITY_NAME / MSIX_SCHOOL_IDENTITY_NAME
+#   MSIX_<PRODUCT>_DISPLAY_NAME  optional; only if the reserved name differs
+#                                from "DigitGlance <Product>"
+#
+# Manual dispatch only. Nothing is published anywhere: download the artifacts
+# from the run page. The NSIS + GitHub-updater path (release-products.yml) is
+# untouched.
+
+on:
+  workflow_dispatch:
+    inputs:
+      product:
+        description: Product to package
+        required: true
+        type: choice
+        options: [trade, books, school]
+      version:
+        description: App version X.Y.Z (blank = the version in src-tauri/tauri.<product>.conf.json). Becomes MSIX X.Y.Z.0 and must be higher than the last Store submission.
+        required: false
+        type: string
+        default: ""
+      include_arm64:
+        description: Also build arm64 and an x64+arm64 .msixbundle (experimental)
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: store-msix-${{ github.event.inputs.product }}
+  cancel-in-progress: false
+
+env:
+  MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+  MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME }}
+  MSIX_TRADE_IDENTITY_NAME: ${{ vars.MSIX_TRADE_IDENTITY_NAME }}
+  MSIX_BOOKS_IDENTITY_NAME: ${{ vars.MSIX_BOOKS_IDENTITY_NAME }}
+  MSIX_SCHOOL_IDENTITY_NAME: ${{ vars.MSIX_SCHOOL_IDENTITY_NAME }}
+  MSIX_TRADE_DISPLAY_NAME: ${{ vars.MSIX_TRADE_DISPLAY_NAME }}
+  MSIX_BOOKS_DISPLAY_NAME: ${{ vars.MSIX_BOOKS_DISPLAY_NAME }}
+  MSIX_SCHOOL_DISPLAY_NAME: ${{ vars.MSIX_SCHOOL_DISPLAY_NAME }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      app_version: ${{ steps.version.outputs.app_version }}
+      msix_version: ${{ steps.version.outputs.msix_version }}
+      product_name: ${{ steps.version.outputs.product_name }}
+      store_ready: ${{ steps.identity.outputs.store_ready }}
+      arches: ${{ steps.arches.outputs.arches }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test the MSIX manifest/asset generator
+        run: node --test "scripts/msix/test/*.test.mjs"
+
+      - name: Resolve version
+        id: version
+        env:
+          PRODUCT: ${{ github.event.inputs.product }}
+          VERSION_INPUT: ${{ github.event.inputs.version }}
+        run: |
+          if [ -n "$VERSION_INPUT" ]; then
+            node scripts/msix/cli.mjs version --product "$PRODUCT" --version "$VERSION_INPUT"
+          else
+            node scripts/msix/cli.mjs version --product "$PRODUCT"
+          fi
+
+      - name: Check Store identity
+        id: identity
+        env:
+          PRODUCT: ${{ github.event.inputs.product }}
+        run: |
+          if node scripts/msix/cli.mjs identity --product "$PRODUCT"; then
+            echo "store_ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "store_ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Store identity for '$PRODUCT' is not configured, so only the TEST package will be built. Reserve the app name in Partner Center and set the MSIX_* repo variables (see docs/STORE.md)."
+          fi
+
+      - name: Architectures
+        id: arches
+        env:
+          ARM64: ${{ github.event.inputs.include_arm64 }}
+        run: |
+          if [ "$ARM64" = "true" ]; then
+            echo 'arches=["x64","arm64"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'arches=["x64"]' >> "$GITHUB_OUTPUT"
+          fi
+
+  package:
+    needs: prepare
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(needs.prepare.outputs.arches) }}
+    env:
+      PRODUCT: ${{ github.event.inputs.product }}
+      PRODUCT_NAME: ${{ needs.prepare.outputs.product_name }}
+      APP_VERSION: ${{ needs.prepare.outputs.app_version }}
+      MSIX_VERSION: ${{ needs.prepare.outputs.msix_version }}
+      STORE_READY: ${{ needs.prepare.outputs.store_ready }}
+      ARCH: ${{ matrix.arch }}
+      RUST_TARGET: ${{ matrix.arch == 'arm64' && 'aarch64-pc-windows-msvc' || 'x86_64-pc-windows-msvc' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.RUST_TARGET }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ${{ github.event.inputs.product }}-store-${{ matrix.arch }}
+
+      - name: Install JS deps
+        run: npm install
+
+      - name: Generate app icons
+        # Same per-product icon set the NSIS build uses; tauri-build embeds
+        # icons/<product>/icon.ico into the exe.
+        shell: bash
+        run: |
+          SRC="assets/${PRODUCT}-icon-source.png"
+          [ -f "$SRC" ] || SRC="assets/icon-source.png"
+          npx tauri icon "$SRC" -o "src-tauri/icons/${PRODUCT}"
+
+      - name: Build the app binary (Store flavour, no updater)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Pin the app version for this package without editing tracked files.
+          printf '{"version":"%s"}\n' "$APP_VERSION" > src-tauri/tauri.version.gen.json
+          npx tauri build \
+            --config "src-tauri/tauri.${PRODUCT}.conf.json" \
+            --config src-tauri/tauri.store.conf.json \
+            --config src-tauri/tauri.version.gen.json \
+            --features store \
+            --no-bundle \
+            --target "$RUST_TARGET"
+
+      - name: Locate the built exe
+        id: exe
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="src-tauri/target/${RUST_TARGET}/release"
+          ls -la "$DIR"/*.exe || true
+          EXE=""
+          for c in "$DIR/${PRODUCT_NAME}.exe" "$DIR/digitglance.exe"; do
+            if [ -f "$c" ]; then EXE="$c"; break; fi
+          done
+          if [ -z "$EXE" ]; then
+            mapfile -t ALL < <(find "$DIR" -maxdepth 1 -name '*.exe')
+            if [ "${#ALL[@]}" -eq 1 ]; then EXE="${ALL[0]}"; fi
+          fi
+          if [ -z "$EXE" ]; then echo "::error::Could not find the app exe in $DIR"; exit 1; fi
+          echo "Using $EXE"
+          echo "path=$EXE" >> "$GITHUB_OUTPUT"
+
+      - name: Find Windows SDK tools
+        shell: pwsh
+        run: |
+          $root = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
+          $bin = Get-ChildItem $root -Directory |
+            Where-Object { $_.Name -match '^10\.' -and (Test-Path (Join-Path $_.FullName 'x64\makeappx.exe')) } |
+            Sort-Object { [version]$_.Name } -Descending |
+            Select-Object -First 1
+          if (-not $bin) { throw "makeappx.exe not found under $root" }
+          $tools = Join-Path $bin.FullName 'x64'
+          Write-Host "Windows SDK tools: $tools"
+          Add-Content -Path $env:GITHUB_PATH -Value $tools
+
+      - name: Package for the Store (unsigned)
+        if: env.STORE_READY == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          node scripts/msix/cli.mjs layout --product "$PRODUCT" --flavor store --arch "$ARCH" \
+            --version "$APP_VERSION" --exe "${{ steps.exe.outputs.path }}" --out build/msix/store
+          MSYS_NO_PATHCONV=1 makeappx.exe pack /o /h SHA256 /d build/msix/store /p "out/${PRODUCT}-${APP_VERSION}-${ARCH}-store.msix"
+
+      - name: Package the sideload TEST build
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out-test
+          node scripts/msix/cli.mjs layout --product "$PRODUCT" --flavor test --arch "$ARCH" \
+            --version "$APP_VERSION" --exe "${{ steps.exe.outputs.path }}" --out build/msix/test
+          MSYS_NO_PATHCONV=1 makeappx.exe pack /o /h SHA256 /d build/msix/test /p "out-test/${PRODUCT}-${APP_VERSION}-${ARCH}-test.msix"
+
+      - name: Sign the TEST package with a throwaway self-signed certificate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Subject MUST equal the test manifest's Publisher (scripts/msix/manifest.mjs TEST_PUBLISHER).
+          $cert = New-SelfSignedCertificate -Type Custom -Subject 'CN=DigitGlance-Test-Only' `
+            -FriendlyName 'DigitGlance TEST ONLY sideload certificate' `
+            -KeyUsage DigitalSignature -KeyAlgorithm RSA -KeyLength 2048 `
+            -CertStoreLocation 'Cert:\CurrentUser\My' -NotAfter (Get-Date).AddYears(1) `
+            -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3', '2.5.29.19={text}')
+          $plain = [guid]::NewGuid().ToString('N')
+          Write-Host "::add-mask::$plain"
+          $secure = ConvertTo-SecureString -String $plain -Force -AsPlainText
+          $pfx = Join-Path $env:RUNNER_TEMP 'dg-test.pfx'
+          Export-PfxCertificate -Cert $cert -FilePath $pfx -Password $secure | Out-Null
+          Export-Certificate -Cert $cert -FilePath "out-test\$env:PRODUCT-TEST-ONLY.cer" | Out-Null
+          $pkg = "out-test\$env:PRODUCT-$env:APP_VERSION-$env:ARCH-test.msix"
+          & signtool.exe sign /fd SHA256 /f $pfx /p $plain $pkg
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed ($LASTEXITCODE)" }
+          Remove-Item $pfx -Force
+          Remove-Item "Cert:\CurrentUser\My\$($cert.Thumbprint)" -Force
+          @"
+          TEST ONLY - NOT FOR CUSTOMERS - NOT THE STORE BUILD
+
+          $env:PRODUCT_NAME $env:APP_VERSION ($env:ARCH), MSIX $env:MSIX_VERSION
+          Signed with a throwaway self-signed certificate created in GitHub Actions
+          run $env:GITHUB_RUN_ID. The private key was deleted at the end of the run.
+
+          To install on a test machine (PowerShell as Administrator):
+            Import-Certificate -FilePath .\$env:PRODUCT-TEST-ONLY.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople
+            Add-AppxPackage .\$env:PRODUCT-$env:APP_VERSION-$env:ARCH-test.msix
+          Remove afterwards:
+            Get-AppxPackage *TestOnly* | Remove-AppxPackage
+            Get-ChildItem Cert:\LocalMachine\TrustedPeople | Where-Object Subject -eq 'CN=DigitGlance-Test-Only' | Remove-Item
+
+          Uninstalling an MSIX app DELETES its local data. See docs/STORE.md.
+          "@ | Set-Content -Encoding utf8 "out-test\README-TEST-ONLY.txt"
+
+      - name: Upload Store package
+        if: env.STORE_READY == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PRODUCT }}-${{ env.APP_VERSION }}-${{ matrix.arch }}-store
+          path: out/*.msix
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload TEST package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PRODUCT }}-${{ env.APP_VERSION }}-${{ matrix.arch }}-TEST-ONLY
+          path: out-test/*
+          if-no-files-found: error
+          retention-days: 30
+
+  bundle:
+    needs: [prepare, package]
+    if: github.event.inputs.include_arm64 == 'true' && needs.prepare.outputs.store_ready == 'true'
+    runs-on: windows-latest
+    env:
+      PRODUCT: ${{ github.event.inputs.product }}
+      APP_VERSION: ${{ needs.prepare.outputs.app_version }}
+      MSIX_VERSION: ${{ needs.prepare.outputs.msix_version }}
+    steps:
+      - name: Download Store packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ${{ github.event.inputs.product }}-${{ needs.prepare.outputs.app_version }}-*-store
+          path: bundle-in
+          merge-multiple: true
+
+      - name: Bundle x64 + arm64
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
+          $bin = Get-ChildItem $root -Directory |
+            Where-Object { $_.Name -match '^10\.' -and (Test-Path (Join-Path $_.FullName 'x64\makeappx.exe')) } |
+            Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+          $makeappx = Join-Path $bin.FullName 'x64\makeappx.exe'
+          New-Item -ItemType Directory -Force out | Out-Null
+          & $makeappx bundle /o /bv $env:MSIX_VERSION /d bundle-in /p "out\$env:PRODUCT-$env:APP_VERSION-store.msixbundle"
+          if ($LASTEXITCODE -ne 0) { throw "makeappx bundle failed ($LASTEXITCODE)" }
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PRODUCT }}-${{ env.APP_VERSION }}-store-bundle
+          path: out/*.msixbundle
+          if-no-files-found: error
+          retention-days: 30

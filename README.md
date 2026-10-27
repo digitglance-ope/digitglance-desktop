@@ -56,6 +56,26 @@ npm run icons:trade    # generate that product's icon set
 npm run build:trade    # or :books / :school — or npm run dev:trade
 ```
 
+### Microsoft Store (MSIX)
+
+Windows customers get each app from the **Microsoft Store as an MSIX package**.
+Microsoft signs the package when it publishes it, so no code-signing
+certificate is needed for that route. Run **Microsoft Store (MSIX)**
+([`.github/workflows/store-msix.yml`](.github/workflows/store-msix.yml)) from
+the Actions tab and pick the product. It produces an unsigned `.msix` for
+Partner Center and a self-signed **TEST ONLY** `.msix` + `.cer` for trying it
+on a real machine first. Store builds use `--features store` +
+`src-tauri/tauri.store.conf.json`, which leave out the Tauri self-updater
+because the Store delivers updates. The NSIS download and its GitHub updater
+are unchanged. Owner steps, the Partner Center identity variables, the WebView2
+trade-off and the "uninstall deletes local data" rule for the offline POS are
+in [**docs/STORE.md**](docs/STORE.md).
+
+```bash
+npm run test:msix          # manifest/asset generator tests (no Rust needed)
+npm run build:store:trade  # local Store-flavour binary (needs Rust)
+```
+
 ### Android (Play Store)
 
 The same shell also builds an Android **App Bundle (`.aab`)** for the Play Store
@@ -70,6 +90,8 @@ and submission notes. The mobile build uses its own `applicationId`
   Tauri updater key via the `TAURI_SIGNING_PRIVATE_KEY` /
   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` repo secrets; the public key is in
   `src-tauri/tauri.conf.json`.
-- **OS code-signing** (follow-up): installers are currently unsigned, so first
-  run shows a SmartScreen (Windows) / Gatekeeper (macOS) prompt. Add an Apple
-  Developer ID + Windows OV/EV certificate to remove it.
+- **OS code-signing** (follow-up): the direct-download installers are
+  currently unsigned, so first run shows a SmartScreen (Windows) / Gatekeeper
+  (macOS) prompt. On Windows the answer is the Microsoft Store: the Store signs
+  the MSIX (see docs/STORE.md), so no OV/EV certificate is planned. macOS still
+  needs an Apple Developer ID.
