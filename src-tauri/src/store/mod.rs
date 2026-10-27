@@ -28,5 +28,8 @@ pub mod sales;
 pub mod staff;
 pub mod storage;
 
+#[cfg(test)]
+mod tests;
+
 pub use db::Store;
 pub use error::{ErrorCode, Result, StoreError};

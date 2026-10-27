@@ -1,0 +1,59 @@
+name: Local store tests
+
+# The offline till's native local store (src-tauri/src/store): the full test
+# suite on the shipping configuration (SQLCipher with vendored OpenSSL) on
+# Windows, plus clippy. Building vendored OpenSSL needs a native Perl; GitHub's
+# Windows runners ship Strawberry Perl, which we point openssl-src at explicitly
+# (Git-Bash/MSYS Perl cannot configure OpenSSL for MSVC).
+
+on:
+  pull_request:
+    paths:
+      - "src-tauri/**"
+      - "docs/LOCAL-STORE-API.md"
+      - ".github/workflows/local-store-tests.yml"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: local-store
+
+      - name: Install JS deps
+        run: npm install
+
+      - name: Generate app icons
+        # generate_context! embeds the base config's icons at compile time.
+        shell: bash
+        run: npx tauri icon assets/icon-source.png -o src-tauri/icons
+
+      - name: Use native Perl for vendored OpenSSL
+        shell: bash
+        run: echo 'OPENSSL_SRC_PERL=C:\Strawberry\perl\bin\perl.exe' >> "$GITHUB_ENV"
+
+      - name: Store tests (SQLCipher, including crash, keyring and perf)
+        working-directory: src-tauri
+        run: cargo test --lib store:: -- --include-ignored --nocapture
+
+      - name: Clippy
+        working-directory: src-tauri
+        run: cargo clippy --lib --tests -- -D warnings
