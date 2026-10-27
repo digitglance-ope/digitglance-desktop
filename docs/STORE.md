@@ -148,6 +148,10 @@ available to test it.
      sign-out/reset when unsynced sales exist. Windows shows no app-controlled
      prompt on uninstall, so the warning must live in the app and the
      shop-owner guide.
+   - **Built (native store, docs/LOCAL-STORE-API.md):** `store_status.pendingCount` /
+     `failedCount` for the counter, and `export_pending({ path })`, which writes
+     every unsent item to a plain JSON file. Pass a path under Documents or the
+     Desktop: those are not virtualised, so the file survives the uninstall.
    - Updates (Store or sideload) keep the data. Only uninstall or "Reset" in
      Settings → Apps clears it.
    - The TEST package and the Store package are different identities with
