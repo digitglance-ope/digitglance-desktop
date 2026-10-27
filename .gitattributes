@@ -1,0 +1,3 @@
+# The vendored till (scripts/sync-till.mjs): built output, kept byte for byte
+# and collapsed in diffs.
+till-dist/** -text -diff linguist-generated=true
