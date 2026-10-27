@@ -95,3 +95,21 @@ This machine has no Rust toolchain, so no Tauri build was run locally. The confi
 merge, CI matrix, and updater endpoints are wired to the proven existing setup,
 but the **first CI build is the validation gate** — run one product to green
 before tagging the others.
+
+## Offline till local store (Trade)
+
+`src-tauri/src/store` is the native local store for the offline POS till:
+SQLCipher-encrypted SQLite (key in the Windows Credential Manager, one file per
+business and device), the upload queue, retention cleanup, the storage monitor
+and offline PIN checks, exposed as Tauri commands. The contract, security model,
+durability rules, test list and timings are in `docs/LOCAL-STORE-API.md`.
+
+- The commands are declared in `src-tauri/build.rs` and granted only by
+  `capabilities/local-store.json` (main window, local pages, no remote origin).
+  Adding a command means adding it in four places; a test checks they agree.
+- Builds now compile OpenSSL from source for SQLCipher, which needs a native Perl
+  (Strawberry on Windows; the release workflow points `OPENSSL_SRC_PERL` at it).
+- `.github/workflows/local-store-tests.yml` runs the store tests and clippy on
+  Windows for every PR touching `src-tauri/`.
+- Only DigitGlance Trade (and the base dev config) enable the store; Books and
+  School reject the commands.

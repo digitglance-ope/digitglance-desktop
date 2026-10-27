@@ -17,8 +17,14 @@ page, or from **https://digitglance.com/download**.
 
 - **Is:** a thin native window that loads `https://digitglance.com/app/dashboard`.
   All authentication, data, reports, AI, billing and permissions run server-side
-  in the live app — the shell adds no business logic and stores no business data
-  locally.
+  in the live app — the shell adds no business logic.
+- **Except the offline till (Trade only):** DigitGlance Trade carries a native,
+  encrypted local store so a paired POS terminal keeps selling with no network
+  (SQLCipher database, key in the Windows Credential Manager, one file per
+  business and device, upload queue, retention and storage manager). Its Tauri
+  commands are granted only to the app's own local pages, never to the remote
+  web origin. Contract, security model and tests:
+  [**docs/LOCAL-STORE-API.md**](docs/LOCAL-STORE-API.md).
 - **Isn't:** the application source. There are no API keys, credentials, or
   backend logic in this repo (that's why it can safely be public).
 
@@ -55,6 +61,11 @@ npm install
 npm run icons:trade    # generate that product's icon set
 npm run build:trade    # or :books / :school — or npm run dev:trade
 ```
+
+Building needs a **native Perl** for SQLCipher's vendored OpenSSL (Windows:
+Strawberry Perl; Git-Bash Perl does not work). Offline-till local-store tests: `cd src-tauri &&
+cargo test --lib store::` (or `--no-default-features` for the logic tests on
+plain SQLite where no native Perl is available).
 
 ### Microsoft Store (MSIX)
 
