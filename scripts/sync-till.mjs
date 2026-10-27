@@ -74,7 +74,14 @@ cpSync(dist, out, { recursive: true })
 // The back-office window's local launcher (connectivity gate -> the web app).
 const launcher = path.join(root, 'dist', 'trade')
 mkdirSync(path.join(out, 'backoffice'), { recursive: true })
-for (const f of readdirSync(launcher)) cpSync(path.join(launcher, f), path.join(out, 'backoffice', f), { recursive: true })
+// Byte for byte as committed: a Windows checkout with core.autocrlf has CRLF in
+// the working copy, so take the files from git (LF) rather than the disk.
+for (const f of readdirSync(launcher)) {
+  const rel = `dist/trade/${f}`
+  const r = spawnSync('git', ['show', `HEAD:${rel}`], { cwd: root, encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 })
+  if (r.status === 0) writeFileSync(path.join(out, 'backoffice', f), r.stdout)
+  else cpSync(path.join(launcher, f), path.join(out, 'backoffice', f), { recursive: true })
+}
 
 const source = {
   repo: repoUrl.replace(/^https:\/\/github\.com\//, '').replace(/^git@github\.com:/, ''),
