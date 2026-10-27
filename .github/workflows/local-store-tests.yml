@@ -52,7 +52,7 @@ jobs:
 
       - name: Store tests (SQLCipher, including crash, keyring and perf)
         working-directory: src-tauri
-        run: cargo test --lib store:: -- --include-ignored --nocapture
+        run: cargo test --lib "store::" -- --include-ignored --nocapture
 
       - name: Clippy
         working-directory: src-tauri
