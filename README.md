@@ -22,8 +22,10 @@ page, or from **https://digitglance.com/download**.
   encrypted local store so a paired POS terminal keeps selling with no network
   (SQLCipher database, key in the Windows Credential Manager, one file per
   business and device, upload queue, retention and storage manager). Its Tauri
-  commands are granted only to the app's own local pages, never to the remote
-  web origin. Contract, security model and tests:
+  commands are granted only to the bundled till window (`till-dist/`, vendored
+  from the web repo's `apps/till` by `scripts/sync-till.mjs`), never to the
+  remote web origin, which opens in its own `backoffice` window. Contract,
+  security model, windows and tests:
   [**docs/LOCAL-STORE-API.md**](docs/LOCAL-STORE-API.md).
 - **Isn't:** the application source. There are no API keys, credentials, or
   backend logic in this repo (that's why it can safely be public).
