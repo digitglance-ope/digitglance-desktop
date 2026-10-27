@@ -105,6 +105,14 @@ jobs:
           echo "Using icon source: $SRC"
           npx tauri icon "$SRC" -o "src-tauri/icons/${{ steps.meta.outputs.product }}"
 
+      - name: Use native Perl for vendored OpenSSL (SQLCipher)
+        # The offline till's local store links SQLCipher with vendored OpenSSL,
+        # whose configure step needs a native Windows Perl (Strawberry, which
+        # the runner ships), not the Git-Bash one.
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        run: echo 'OPENSSL_SRC_PERL=C:\Strawberry\perl\bin\perl.exe' >> "$GITHUB_ENV"
+
       - name: Build & draft release
         uses: tauri-apps/tauri-action@v0
         env:

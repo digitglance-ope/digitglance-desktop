@@ -176,6 +176,12 @@ jobs:
           [ -f "$SRC" ] || SRC="assets/icon-source.png"
           npx tauri icon "$SRC" -o "src-tauri/icons/${PRODUCT}"
 
+      - name: Use native Perl for vendored OpenSSL (SQLCipher)
+        # The offline till's local store links SQLCipher with vendored OpenSSL,
+        # whose configure step needs the runner's Strawberry Perl, not Git-Bash's.
+        shell: bash
+        run: echo 'OPENSSL_SRC_PERL=C:\Strawberry\perl\bin\perl.exe' >> "$GITHUB_ENV"
+
       - name: Build the app binary (Store flavour, no updater)
         shell: bash
         run: |

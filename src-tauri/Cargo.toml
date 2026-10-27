@@ -17,6 +17,13 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 # (NSIS) builds leave it off and keep the GitHub updater. See docs/STORE.md.
 [features]
 store = []
+# SQLCipher is ON by default and is the only configuration that may ship: a
+# build without it refuses to open a store at runtime (see store/db.rs), so a
+# sale can never be written unencrypted. `--no-default-features` exists only so
+# the store's logic tests can run on a machine without a native Perl.
+# (Unrelated to `store` above, which is the Microsoft Store flavour.)
+default = ["sqlcipher"]
+sqlcipher = ["rusqlite/bundled-sqlcipher-vendored-openssl"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -27,6 +34,32 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Offline till local store (desktop only; see src/store and docs/LOCAL-STORE-API.md).
+# SQLite with SQLCipher whole-file encryption; OpenSSL (SQLCipher's crypto) is
+# vendored and statically linked so Windows needs no system OpenSSL. Building
+# vendored OpenSSL needs a native Perl (Strawberry Perl on Windows: preinstalled
+# on GitHub's windows runners; MSYS/Git-Bash perl does NOT work).
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+rusqlite = { version = "0.40", features = ["bundled"] }
+keyring = { version = "3.6", features = ["windows-native", "apple-native"] }
+uuid = { version = "1.20", features = ["v7"] }
+bcrypt = "0.19"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+thiserror = "2"
+fs4 = "1.1"
+getrandom = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
+
+# SQLite and bcrypt are slow unoptimised; keep debug/test builds realistic.
+[profile.dev.package.libsqlite3-sys]
+opt-level = 3
+[profile.dev.package.bcrypt]
+opt-level = 3
+[profile.dev.package.blowfish]
+opt-level = 3
 
 [profile.release]
 # Smaller, faster-to-ship installers: strip symbols, optimise for size, and
