@@ -4,17 +4,17 @@
   "version": "1.0.2",
   "identifier": "com.digitglance.trade",
   "build": {
-    "frontendDist": "../dist/trade"
+    "frontendDist": "../till-dist"
   },
   "app": {
     "windows": [
       {
-        "label": "main",
+        "label": "till",
         "title": "DigitGlance Trade",
         "url": "index.html",
-        "width": 1320,
+        "width": 1366,
         "height": 880,
-        "minWidth": 960,
+        "minWidth": 1024,
         "minHeight": 640,
         "resizable": true,
         "center": true,

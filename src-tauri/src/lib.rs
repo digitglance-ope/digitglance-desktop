@@ -31,15 +31,19 @@
 // The ONE exception is the offline till's local store (`store` module, Trade
 // only; unrelated to the `store` Cargo feature, which is the Microsoft Store
 // flavour): an encrypted SQLite database plus Tauri commands for the till that
-// will be bundled locally. Those commands are granted by
-// capabilities/local-store.json to the app's own local pages only; the remote
-// origin still has no IPC at all. See docs/LOCAL-STORE-API.md.
+// is bundled locally (till-dist/, DigitGlance Trade's `till` window). Those
+// commands, the till's device HTTP and its save dialog are granted by
+// capabilities/local-store.json and till.json to that window only; the remote
+// origin (the `backoffice` window and every Books/School window) still has no
+// IPC at all. See docs/LOCAL-STORE-API.md and src/till.rs.
 
 #[cfg(desktop)]
 pub mod store;
+#[cfg(desktop)]
+pub mod till;
 
 use tauri::Manager;
-#[cfg(not(feature = "store"))]
+#[cfg(all(not(feature = "store"), not(desktop)))]
 use tauri_plugin_updater::UpdaterExt;
 
 /// Product identifiers that carry the offline till (Trade, and the base dev config).
@@ -53,12 +57,20 @@ pub fn run() {
         // instead of opening a second one. (It also guarantees one process,
         // so one writer, on the till's database file.)
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
+            // Trade opens the till; Books and School the main launcher window.
+            let window = app
+                .get_webview_window("till")
+                .or_else(|| app.get_webview_window("main"));
+            if let Some(window) = window {
                 let _ = window.unminimize();
                 let _ = window.show();
                 let _ = window.set_focus();
             }
-        }));
+        }))
+        // The till's device HTTP (scoped to the API in capabilities/till.json)
+        // and its dialogs. Granted to the till window only.
+        .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_dialog::init());
 
     // Auto-update (direct-download builds only): the shell checks the GitHub
     // release feed on launch and installs a newer, signed build in the
@@ -110,7 +122,12 @@ pub fn run() {
         store::commands::audit_append,
         store::commands::audit_take_unsent,
         store::commands::audit_mark_sent,
+        till::open_backoffice,
     ]);
+
+    // Closing the till with unsent sales asks first (src/till.rs).
+    #[cfg(desktop)]
+    let builder = builder.on_window_event(till::on_window_event);
 
     builder
         .setup(|app| {
@@ -126,7 +143,12 @@ pub fn run() {
                 app.manage(store::commands::StoreState::new(data_dir, keystore, enabled));
             }
 
-            #[cfg(not(feature = "store"))]
+            // Desktop: download, then install only once no shift is open on
+            // this till (D17, src/till.rs).
+            #[cfg(all(not(feature = "store"), desktop))]
+            tauri::async_runtime::spawn(till::update_when_no_shift(app.handle().clone()));
+
+            #[cfg(all(not(feature = "store"), not(desktop)))]
             {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {

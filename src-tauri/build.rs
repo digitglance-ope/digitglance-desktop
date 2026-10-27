@@ -1,8 +1,8 @@
 // The app's own IPC commands (the offline till's local store, src/store) are
 // declared here so Tauri generates an `allow-<command>` permission for each.
 // Once declared, a command is callable ONLY from a window/origin that a
-// capability grants it to (capabilities/local-store.json: the app's local
-// pages in the main window; never the remote web origin).
+// capability grants it to (capabilities/local-store.json and till.json: the
+// bundled till window only; never the remote web origin).
 const COMMANDS: &[&str] = &[
     "store_open",
     "store_close",
@@ -40,6 +40,8 @@ const COMMANDS: &[&str] = &[
     "audit_append",
     "audit_take_unsent",
     "audit_mark_sent",
+    // The till's button for the web back office window (src/till.rs).
+    "open_backoffice",
 ];
 
 fn main() {

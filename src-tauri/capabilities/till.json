@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "till",
+  "description": "The bundled offline till (DigitGlance Trade, window `till`, the app's own pages only: no `remote` section). Device HTTP goes through the HTTP plugin, scoped to the production API only, because the API's CORS does not list the Tauri origins. The save dialog picks where export_pending writes the unsent sales. open_backoffice opens the web back office in its own `backoffice` window, which has no IPC beyond core.",
+  "windows": ["till"],
+  "platforms": ["windows", "macOS", "linux"],
+  "permissions": [
+    "core:default",
+    "allow-open-backoffice",
+    "dialog:allow-save",
+    {
+      "identifier": "http:default",
+      "allow": [{ "url": "https://api.digitglance.com/*" }]
+    }
+  ]
+}
