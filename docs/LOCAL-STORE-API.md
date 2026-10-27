@@ -616,6 +616,14 @@ database 138 MB. Every search and the barcode lookup average under the
 50 ms target; a one-letter prefix is the slowest case (the till should start
 searching at two characters). Reproduce with the perf command above.
 
+The same test with **SQLCipher** on GitHub's `windows-latest` runner (CI run
+40487286076, all 27 store tests passed including encryption, keyring, crash
+and perf): `catalog_search` "co" 16.8 ms avg / 23.6 worst, "golden rice"
+11.8 / 15.3, SKU prefix 0.35 / 1.7, "m" + category 31.0 / 88.1;
+`catalog_by_barcode` 0.04 / 0.35; `sale_commit` (FULL) 14.9 / 434 (the
+runner's disk flush); `queue_next_batch` 3.0 / 5.1; `store_status` 3.3 / 8.1;
+snapshot 3.2 s; database 140 MB.
+
 ## Known gaps
 
 - The bundled till (`apps/till`) is not in this repo yet; until it is, the
