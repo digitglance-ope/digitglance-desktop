@@ -88,13 +88,9 @@ pub fn run(store: &mut Store, retention_days: Option<i64>, force: bool) -> Resul
     tx.commit()?;
 
     // Give space back to the disk: incremental when lots is free, full on force.
-    let page_size: i64 = store.conn.query_row("PRAGMA page_size", [], |x| x.get(0))?;
-    let free_pages: i64 = store
-        .conn
-        .query_row("PRAGMA freelist_count", [], |x| x.get(0))?;
-    let pages: i64 = store
-        .conn
-        .query_row("PRAGMA page_count", [], |x| x.get(0))?;
+    let page_size = pragma_i64(&store.conn, "page_size")?;
+    let free_pages = pragma_i64(&store.conn, "freelist_count")?;
+    let pages = pragma_i64(&store.conn, "page_count")?;
     let free_bytes = free_pages * page_size;
     if force {
         store.conn.execute_batch("VACUUM;")?;
@@ -111,4 +107,18 @@ pub fn run(store: &mut Store, retention_days: Option<i64>, force: bool) -> Resul
             .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
     }
     Ok(r)
+}
+
+/// SQLCipher answers some pragmas (page_size -> cipher_page_size) as TEXT, so
+/// accept an integer or a numeric string.
+fn pragma_i64(conn: &rusqlite::Connection, name: &str) -> Result<i64> {
+    let v: rusqlite::types::Value = conn.query_row(&format!("PRAGMA {name}"), [], |x| x.get(0))?;
+    match v {
+        rusqlite::types::Value::Integer(i) => Ok(i),
+        rusqlite::types::Value::Text(t) => t
+            .trim()
+            .parse()
+            .map_err(|_| StoreError::io(format!("PRAGMA {name} returned '{t}'"))),
+        other => Err(StoreError::io(format!("PRAGMA {name} returned {other:?}"))),
+    }
 }
