@@ -48,6 +48,21 @@ Windows is the shippable target. macOS builds but is unsigned and the dmg step i
 flaky on headless runners — re-run failed jobs if needed, and keep it out of the
 public download page until it is signed + notarised.
 
+## Microsoft Store (MSIX)
+
+Windows distribution goes through the Microsoft Store as MSIX (owner decision:
+the Store signs the package, so no code-signing certificate is bought).
+`.github/workflows/store-msix.yml` (manual: product, version, optional arm64)
+builds the binary with `--features store` + `src-tauri/tauri.store.conf.json`
+(no Tauri updater), writes `AppxManifest.xml` + logo assets with
+`scripts/msix/`, and runs `makeappx pack`. Artifacts:
+`<product>-<version>-x64-store.msix` (unsigned, for Partner Center; built once
+the `MSIX_*` repo variables hold the Partner Center identity) and
+`<product>-<version>-x64-test.msix` + `.cer` (TEST ONLY, self-signed in CI).
+Full owner checklist, WebView2 choice, and the rule that **uninstalling an MSIX
+deletes its local data** (offline POS: never uninstall with pending sales) are
+in [docs/STORE.md](docs/STORE.md). The NSIS path below is unchanged.
+
 ## Publish + enable auto-update
 
 1. CI drafts `DigitGlance Trade trade-v1.0.0` with the signed `.exe` + `latest.json`.
@@ -68,8 +83,11 @@ public download page until it is signed + notarised.
 - **Landing URLs** above are sensible defaults; pin Trade to `/app/pos` or
   `/app/invoice` if you want it to skip the hub.
 - **Signing.** One updater key signs all three (already configured via the
-  `TAURI_SIGNING_PRIVATE_KEY` secrets). OS code-signing (OV/EV cert for Windows,
-  Apple Developer for macOS) is still pending and unchanged by this work.
+  `TAURI_SIGNING_PRIVATE_KEY` secrets). Windows: Store MSIX is signed by
+  Microsoft (docs/STORE.md); the direct NSIS download stays unsigned. macOS:
+  Apple Developer ID still pending.
+- **Store identity.** Reserve the three names in Partner Center and copy the
+  Package Identity values into the `MSIX_*` repo variables (docs/STORE.md).
 
 ## What could not be validated here
 

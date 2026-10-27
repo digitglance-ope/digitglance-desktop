@@ -1,0 +1,19 @@
+{
+  "_readme": "Microsoft Store package identity, copied EXACTLY (case, spaces, punctuation) from Partner Center > the app > Product management > Product identity. These values are not secret (every published package carries them), so they may be committed here once known. Repo variables MSIX_PUBLISHER, MSIX_PUBLISHER_DISPLAY_NAME, MSIX_<PRODUCT>_IDENTITY_NAME and MSIX_<PRODUCT>_DISPLAY_NAME override this file. Any value starting with REPLACE_ME counts as not set, and the Store package is then skipped (the TEST package still builds). See docs/STORE.md.",
+  "publisher": "REPLACE_ME: Package/Identity/Publisher, e.g. CN=XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX (same for all three apps under one developer account)",
+  "publisherDisplayName": "REPLACE_ME: Package/Properties/PublisherDisplayName, the developer account's publisher display name",
+  "products": {
+    "trade": {
+      "identityName": "REPLACE_ME: Package/Identity/Name for the reserved DigitGlance Trade app",
+      "displayName": "DigitGlance Trade"
+    },
+    "books": {
+      "identityName": "REPLACE_ME: Package/Identity/Name for the reserved DigitGlance Books app",
+      "displayName": "DigitGlance Books"
+    },
+    "school": {
+      "identityName": "REPLACE_ME: Package/Identity/Name for the reserved DigitGlance School app",
+      "displayName": "DigitGlance School"
+    }
+  }
+}

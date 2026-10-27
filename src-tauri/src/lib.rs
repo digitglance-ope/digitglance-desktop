@@ -29,11 +29,12 @@
 // remote origin, so it stays a safe, dedicated window onto the app.
 
 use tauri::Manager;
+#[cfg(not(feature = "store"))]
 use tauri_plugin_updater::UpdaterExt;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // Single instance: relaunching the app focuses the existing window
         // instead of opening a second one.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -42,10 +43,19 @@ pub fn run() {
                 let _ = window.show();
                 let _ = window.set_focus();
             }
-        }))
-        // Auto-update: the shell checks the GitHub release feed on launch and
-        // installs a newer, signed build in the background. The web content
-        // itself is always live, so the shell changes rarely.
+        }));
+
+    // Auto-update (direct-download builds only): the shell checks the GitHub
+    // release feed on launch and installs a newer, signed build in the
+    // background. The web content itself is always live, so the shell changes
+    // rarely.
+    //
+    // Microsoft Store (MSIX) builds are compiled with `--features store` and
+    // skip this entirely: the Store delivers updates for packaged apps, and an
+    // MSIX install directory is read-only, so a self-update could not apply
+    // anyway. See docs/STORE.md.
+    #[cfg(not(feature = "store"))]
+    let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let handle = app.handle().clone();
@@ -59,7 +69,9 @@ pub fn run() {
                 }
             });
             Ok(())
-        })
+        });
+
+    builder
         .run(tauri::generate_context!())
         .expect("error while running DigitGlance");
 }
