@@ -152,6 +152,12 @@ available to test it.
      `failedCount` for the counter, and `export_pending({ path })`, which writes
      every unsent item to a plain JSON file. Pass a path under Documents or the
      Desktop: those are not virtualised, so the file survives the uninstall.
+   - **Built (desktop till, docs/LOCAL-STORE-API.md "The bundled till"):** the
+     till shows the counter, has **Export unsent sales** (save dialog), and
+     closing the till window with pending or failed items asks first
+     ("Close anyway" / "Keep the till open"). Closing loses nothing; the warning
+     is there because closing is the last point the app can speak before an
+     uninstall.
    - Updates (Store or sideload) keep the data. Only uninstall or "Reset" in
      Settings → Apps clears it.
    - The TEST package and the Store package are different identities with
@@ -164,7 +170,10 @@ available to test it.
    package that is in use until it exits
    ([Inside MSIX: servicing while in use](https://devblogs.microsoft.com/insidemsix/msix-servicing-while-in-use/)).
    A till left open for weeks keeps the old shell. Ask shops to close the app at
-   end of day. The web content is live anyway, so shell updates are rare.
+   end of day. The web back office is live anyway; the bundled till changes
+   only with a new package. The direct-download build's self-updater never
+   installs while a shift is open (D17); for Store builds the till is updated
+   when the app is closed, which the shop does after closing the shift.
 4. **Getting the app onto POS machines.** Machines need Microsoft Store access,
    or `winget install --source msstore <StoreId>`, or Intune/Company Portal for
    managed fleets. Locked-down PCs with the Store blocked by policy cannot

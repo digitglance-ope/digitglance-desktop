@@ -34,6 +34,41 @@ impl StoreState {
             enabled,
         }
     }
+
+    /// For the till window's close guard: sales and shifts not yet on the
+    /// server (pending, waiting to retry, and failed) in the OPEN store.
+    /// `None` when this product has no store or none is open.
+    pub async fn unsent_count(&self) -> Option<i64> {
+        if !self.enabled {
+            return None;
+        }
+        with_store(self, |s, _| {
+            queue::status(s).map(|st| st.pending_count + st.failed_count)
+        })
+        .await
+        .ok()
+    }
+
+    /// For the self-updater (D17: no update while a shift is open). Reopens
+    /// the last paired store the way `device_identity_get` does, since the
+    /// updater can run before the till has asked for anything. `Ok(false)`
+    /// for a product without the store or a till that was never paired; an
+    /// error (store unreadable) is the caller's cue to wait, not to install.
+    pub async fn shift_is_open(&self) -> Result<bool> {
+        if !self.enabled {
+            return Ok(false);
+        }
+        with_slot(self, |slot, ctx| {
+            if slot.is_none() {
+                *slot = identity::open_from_pointer(&ctx.data_dir, ctx.keystore.clone())?;
+            }
+            match slot.as_ref() {
+                Some(s) => Ok(sales::shift_current(s)?.is_some()),
+                None => Ok(false),
+            }
+        })
+        .await
+    }
 }
 
 const LOCK_WAIT: Duration = Duration::from_secs(30);

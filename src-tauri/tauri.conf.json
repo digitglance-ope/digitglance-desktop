@@ -26,13 +26,22 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "capabilities": [
+        "default",
+        "local-store",
+        "till"
+      ]
     }
   },
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
-    "targets": ["nsis", "app", "dmg"],
+    "targets": [
+      "nsis",
+      "app",
+      "dmg"
+    ],
     "publisher": "Digitglance Reliance",
     "category": "Business",
     "shortDescription": "Invoicing, POS & accounting for Nigerian businesses.",

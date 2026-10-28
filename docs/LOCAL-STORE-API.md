@@ -14,6 +14,7 @@ handler list.
 - [Durability](#durability)
 - [Commands](#commands)
 - [Lifecycle on the till](#lifecycle-on-the-till)
+- [The bundled till](#the-bundled-till)
 - [Tests and timings](#tests-and-timings)
 - [Known gaps](#known-gaps)
 
@@ -71,12 +72,12 @@ handler list.
   machine without native Perl) refuses `store_open` at runtime outside tests.
 - **IPC scope:** the commands are declared in `src-tauri/build.rs` (app
   manifest), so each needs an `allow-<command>` permission. Only
-  `src-tauri/capabilities/local-store.json` grants them, to the `main` window,
-  with **no `remote` section**: Tauri therefore allows them only to the app's
-  own bundled pages (`tauri://localhost` / `http://tauri.localhost`), never to
-  `https://digitglance.com`, which the launcher navigates the same window to.
-  When the bundled till (`apps/till`) lands it should get its own window label
-  and the capability should name that window instead of `main`.
+  `src-tauri/capabilities/local-store.json` grants them, to the `till` window
+  only, with **no `remote` section**: Tauri therefore allows them only to the
+  bundled till's own pages (`tauri://localhost` / `http://tauri.localhost`) in
+  that window. The web back office opens in a separate `backoffice` window
+  (core permissions only), so `https://digitglance.com` can never call them.
+  See [The bundled till](#the-bundled-till).
 - **PIN hashes** (bcrypt, from the snapshot) are kept only in the `staff`
   table; `staff_list` never returns them and the JSON blob of each member has
   `pinHash` stripped. Verification happens in Rust (`pin_verify`).
@@ -563,6 +564,48 @@ Oldest unsent first, `limit` default and maximum 200 (the server's batch size).
 5. Sale: `pin_verify` as needed -> `sale_commit` -> print.
 6. Before uninstall or hand-over: `export_pending`.
 
+## The bundled till
+
+DigitGlance Trade ships the till (`apps/till` in the web monorepo) inside the
+app: `till-dist/` holds the built files, vendored by
+`node scripts/sync-till.mjs <path to the digitglance repo>` (runs
+`pnpm --filter till build` there, copies `apps/till/dist`, copies the Trade
+launcher page to `till-dist/backoffice/`, and writes `till-dist/SOURCE.json`
+with the source repo, branch, commit and build time). The files are committed,
+so the release and MSIX workflows build them in with no access to the web repo.
+Only `tauri.trade.conf.json` points `frontendDist` at `../till-dist`; Books
+and School keep their launcher pages.
+
+| Window | Loads | Capabilities |
+|---|---|---|
+| `till` (opens at launch) | `till-dist/index.html` | `default` (core), `local-store` (the 36 commands), `till`: `open_backoffice`, `dialog:allow-save`, `http:default` scoped to `https://api.digitglance.com/*` |
+| `backoffice` (from the till's Back office button, `invoke('open_backoffice')`) | `till-dist/backoffice/index.html`, the connectivity gate, which navigates to `https://digitglance.com/app/dashboard?client=trade-desktop` | `default` (core) only |
+
+- **Device HTTP.** The API's CORS does not list the Tauri origins, so the till
+  sends every device call (pair, ping, snapshot, changes, transactions,
+  heartbeat, events) through `@tauri-apps/plugin-http`, which makes the request
+  from Rust. The scope allows the production API only. For a local API, build or
+  run with `--config src-tauri/tauri.trade.dev.conf.json` as well, which enables
+  `capabilities/till-dev-http.json` (`http://localhost:*`, `http://127.0.0.1:*`);
+  the base config lists the shipped capabilities explicitly
+  (`app.security.capabilities`), so release and MSIX builds never include it.
+- **Closing with unsent sales.** Closing the till window ends the app. When the
+  open store has `pendingCount + failedCount > 0`, the close is held and a
+  native warning asks "Close anyway" / "Keep the till open" (`src/till.rs`,
+  non-blocking dialog). Nothing is lost by closing: the sales stay in the
+  database and upload on the next launch. The warning exists because an MSIX
+  uninstall deletes that database; the till also offers **Export unsent sales**
+  (`export_pending` to a path picked in the save dialog, outside the package).
+- **Updates (D17: never during an open shift).** Direct-download builds check
+  the feed at launch, download a newer build, and install it only when
+  `shift_current` is null (reopening the last paired store if the till has not
+  yet). With a shift open the install waits and re-checks every five minutes;
+  an unreadable store also waits. Quitting before then drops the download and
+  the next launch starts over. Microsoft Store builds (`--features store`) have
+  no self-updater: the Store updates the app, and Windows waits for the app to
+  exit before servicing it (docs/STORE.md), so a till is updated only when it
+  is closed (with the warning above if anything is unsent).
+
 ## Tests and timings
 
 Run from `src-tauri/`:
@@ -626,9 +669,6 @@ snapshot 3.2 s; database 140 MB.
 
 ## Known gaps
 
-- The bundled till (`apps/till`) is not in this repo yet; until it is, the
-  commands are granted to the `main` window's local pages (the launcher). Give
-  the till its own window label and move the grant to it.
 - Re-pairing creates a new device id and therefore a new file; the old file's
   unsent sales stay in the old file. Export them first (`export_pending`), or
   sync before re-pairing.
