@@ -13,11 +13,18 @@ pub struct Migration {
     pub sql: &'static str,
 }
 
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "initial",
-    sql: V1,
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "initial",
+        sql: V1,
+    },
+    Migration {
+        version: 2,
+        name: "returns",
+        sql: V2,
+    },
+];
 
 pub fn latest_version() -> i64 {
     MIGRATIONS.last().map(|m| m.version).unwrap_or(0)
@@ -281,4 +288,51 @@ CREATE TABLE audit_log (
     sent_at        TEXT
 );
 CREATE INDEX audit_unsent ON audit_log(id) WHERE sent_at IS NULL;
+"#;
+
+/// Schema 2: returns (refunds). The outbox `kind` CHECK gains 'return'; SQLite
+/// cannot alter a CHECK, so the table is rebuilt with every row and its `seq`.
+/// The AUTOINCREMENT counter is carried over explicitly: cleanup may have
+/// deleted the highest rows, and a new item must never reuse a `seq`.
+const V2: &str = r#"
+CREATE TABLE outbox_new (
+    seq                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    transaction_id        TEXT NOT NULL UNIQUE,
+    kind                  TEXT NOT NULL CHECK (kind IN ('sale', 'shift_open', 'shift_close', 'return')),
+    status                TEXT NOT NULL CHECK (status IN ('pending', 'failed_transient', 'synced', 'failed')),
+    payload_json          TEXT NOT NULL,
+    attempts              INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at       TEXT,
+    last_error            TEXT,
+    sync_result           TEXT,
+    server_id             TEXT,
+    server_receipt_number TEXT,
+    flags_json            TEXT,
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL,
+    synced_at             TEXT
+);
+INSERT INTO outbox_new(seq, transaction_id, kind, status, payload_json, attempts, next_attempt_at,
+                       last_error, sync_result, server_id, server_receipt_number, flags_json,
+                       created_at, updated_at, synced_at)
+SELECT seq, transaction_id, kind, status, payload_json, attempts, next_attempt_at,
+       last_error, sync_result, server_id, server_receipt_number, flags_json,
+       created_at, updated_at, synced_at
+FROM outbox;
+DELETE FROM sqlite_sequence WHERE name = 'outbox_new';
+INSERT INTO sqlite_sequence(name, seq)
+SELECT 'outbox_new', MAX(v) FROM (
+    SELECT seq AS v FROM sqlite_sequence WHERE name = 'outbox'
+    UNION ALL SELECT MAX(seq) FROM outbox_new
+) HAVING MAX(v) IS NOT NULL;
+DROP TABLE outbox;
+ALTER TABLE outbox_new RENAME TO outbox;
+CREATE INDEX outbox_status ON outbox(status, seq);
+CREATE INDEX outbox_synced ON outbox(synced_at) WHERE status = 'synced';
+
+-- A return points at the local sale it refunds, and its lines at that sale's lines.
+ALTER TABLE sales ADD COLUMN original_transaction_id TEXT;
+CREATE INDEX sales_original ON sales(original_transaction_id) WHERE original_transaction_id IS NOT NULL;
+ALTER TABLE sale_lines ADD COLUMN original_line_no INTEGER;
+ALTER TABLE sale_lines ADD COLUMN restock INTEGER NOT NULL DEFAULT 0;
 "#;

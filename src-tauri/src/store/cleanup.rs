@@ -15,6 +15,7 @@ use crate::store::error::{Result, StoreError};
 pub struct CleanupResult {
     /// Sales + other queue items + shifts + audit rows removed.
     pub removed: u64,
+    /// Sales and returns removed (with their lines and payments).
     pub sales: u64,
     pub queue_items: u64,
     pub shifts: u64,
@@ -45,10 +46,11 @@ pub fn run(store: &mut Store, retention_days: Option<i64>, force: bool) -> Resul
 
     let tx = store.conn.transaction()?;
     // Sales (lines and payments cascade) whose upload was accepted before the cutoff.
+    // Returns are rows of `sales` too (kind 'return') and go the same way.
     r.sales = tx.execute(
         "DELETE FROM sales WHERE transaction_id IN (
              SELECT transaction_id FROM outbox
-             WHERE kind = 'sale' AND status = 'synced' AND synced_at < ?1)",
+             WHERE kind IN ('sale', 'return') AND status = 'synced' AND synced_at < ?1)",
         [&cutoff],
     )? as u64;
     // Their stock deltas, but only once a server stock figure includes them.

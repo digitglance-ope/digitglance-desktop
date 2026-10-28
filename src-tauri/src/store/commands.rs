@@ -394,8 +394,21 @@ pub async fn sales_recent(
     state: State<'_, StoreState>,
     limit: Option<i64>,
     offset: Option<i64>,
+    kind: Option<String>,
+    original_transaction_id: Option<String>,
+    receipt_number: Option<String>,
 ) -> Result<Vec<sales::SaleSummary>> {
-    with_store(&state, move |s, _| sales::sales_recent(s, limit, offset)).await
+    with_store(&state, move |s, _| {
+        sales::sales_recent(
+            s,
+            limit,
+            offset,
+            kind,
+            original_transaction_id,
+            receipt_number,
+        )
+    })
+    .await
 }
 
 #[tauri::command]
