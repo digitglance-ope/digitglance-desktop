@@ -179,7 +179,7 @@ pub fn mark(store: &mut Store, results: &[MarkResult]) -> Result<MarkSummary> {
                         now_s
                     ],
                 )?;
-                if kind == "sale" {
+                if kind == "sale" || kind == "return" {
                     tx.execute(
                         "UPDATE local_stock_delta SET synced_at = ?2 WHERE transaction_id = ?1 AND synced_at IS NULL",
                         params![r.transaction_id, now_s],

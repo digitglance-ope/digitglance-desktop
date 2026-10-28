@@ -241,6 +241,7 @@ pub const SNAPSHOT_SETTING_KEYS: &[&str] = &[
     "branch",
     "terminal",
     "device",
+    "loyalty",
 ];
 
 pub fn apply_snapshot(store: &mut Store, snap: &Value) -> Result<SnapshotResult> {
@@ -308,6 +309,7 @@ fn settings_key_for(entity: &str) -> Option<&'static str> {
         "vat" => Some("vat"),
         "approval_settings" => Some("approvalSettings"),
         "offline_settings" => Some("offlineSettings"),
+        "loyalty_settings" => Some("loyalty"),
         _ => None,
     }
 }

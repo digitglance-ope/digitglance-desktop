@@ -33,11 +33,26 @@ struct SaleInput {
     loyalty: Option<Value>,
     #[serde(default)]
     notes: Option<String>,
+    /// A return only: the local sale it refunds.
+    #[serde(default)]
+    original_transaction_id: Option<String>,
+}
+
+impl SaleInput {
+    fn is_return(&self) -> bool {
+        self.kind == "return"
+    }
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LineInput {
+    /// A return only: the 1-based `line_no` of the original sale's line.
+    #[serde(default)]
+    original_line_no: Option<i64>,
+    /// A return only: the goods go back on the shelf (stock comes back up).
+    #[serde(default)]
+    restock: Option<bool>,
     #[serde(default)]
     product_id: Option<String>,
     product_snapshot: Value,
@@ -102,8 +117,27 @@ fn validate_uuid(v: &str) -> Result<()> {
 
 fn validate_sale(s: &SaleInput) -> Result<()> {
     validate_uuid(&s.transaction_id)?;
-    if s.kind != "sale" {
-        return Err(StoreError::invalid("kind must be 'sale'."));
+    if s.kind != "sale" && s.kind != "return" {
+        return Err(StoreError::invalid("kind must be 'sale' or 'return'."));
+    }
+    if s.is_return() {
+        let ok = s
+            .original_transaction_id
+            .as_deref()
+            .is_some_and(|o| uuid::Uuid::parse_str(o).is_ok());
+        if !ok {
+            return Err(StoreError::invalid(
+                "originalTransactionId must be the UUID of the sale being returned.",
+            ));
+        }
+        for (i, l) in s.lines.iter().enumerate() {
+            if !l.original_line_no.is_some_and(|n| n >= 1) {
+                return Err(StoreError::invalid(format!(
+                    "Line {}: originalLineNo must be the original sale's line number (1 or more).",
+                    i + 1
+                )));
+            }
+        }
     }
     for (n, v) in [
         ("recordedAt", &s.recorded_at),
@@ -122,7 +156,11 @@ fn validate_sale(s: &SaleInput) -> Result<()> {
         ));
     }
     if s.lines.is_empty() {
-        return Err(StoreError::invalid("A sale needs at least one line."));
+        return Err(StoreError::invalid(if s.is_return() {
+            "A return needs at least one line."
+        } else {
+            "A sale needs at least one line."
+        }));
     }
     for l in &s.lines {
         for (n, v) in [
@@ -216,6 +254,83 @@ fn total_of(totals: &Value) -> Option<f64> {
         .find_map(|k| totals.get(*k).and_then(Value::as_f64))
 }
 
+/// A quantity for a message: whole numbers without ".0", others as written.
+fn qty_str(v: f64) -> String {
+    let r = (v * 1e6).round() / 1e6;
+    if r.fract() == 0.0 {
+        format!("{}", r as i64)
+    } else {
+        format!("{r}")
+    }
+}
+
+const QTY_EPS: f64 = 1e-9;
+
+/// A return must refund a sale recorded on this till that the server has not
+/// refused, line by line, never more than was sold less what earlier returns
+/// already refunded.
+fn check_return(store: &Store, r: &SaleInput) -> Result<()> {
+    let original = r.original_transaction_id.as_deref().unwrap_or_default();
+    let found: Option<(String, Option<String>)> = store
+        .conn
+        .query_row(
+            "SELECT s.kind, o.status FROM sales s LEFT JOIN outbox o ON o.transaction_id = s.transaction_id
+             WHERE s.transaction_id = ?1",
+            [original],
+            |x| Ok((x.get(0)?, x.get(1)?)),
+        )
+        .optional()?;
+    match found {
+        Some((kind, status)) if kind == "sale" => {
+            if status.as_deref() == Some("failed") {
+                return Err(StoreError::invalid(
+                    "The server refused the original sale, so it cannot be returned on this till.",
+                ));
+            }
+        }
+        _ => {
+            return Err(StoreError::not_found(
+                "The original sale is not on this till.",
+            ))
+        }
+    }
+    let mut sold_q = store
+        .conn
+        .prepare_cached("SELECT qty FROM sale_lines WHERE transaction_id = ?1 AND line_no = ?2")?;
+    let mut returned_q = store.conn.prepare_cached(
+        "SELECT COALESCE(SUM(l.qty), 0) FROM sale_lines l JOIN sales s ON s.transaction_id = l.transaction_id
+         WHERE s.kind = 'return' AND s.original_transaction_id = ?1 AND l.original_line_no = ?2",
+    )?;
+    // Lines of this return that name the same original line count together.
+    let mut asked: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
+    for (i, l) in r.lines.iter().enumerate() {
+        let n = l.original_line_no.unwrap_or_default();
+        let sold: Option<f64> = sold_q
+            .query_row(params![original, n], |x| x.get(0))
+            .optional()?;
+        let Some(sold) = sold else {
+            return Err(StoreError::invalid(format!(
+                "Line {}: that line is not on the original sale.",
+                i + 1
+            )));
+        };
+        let earlier: f64 = returned_q.query_row(params![original, n], |x| x.get(0))?;
+        let total = asked.entry(n).or_insert(0.0);
+        *total += l.qty;
+        let remaining = (sold - earlier).max(0.0);
+        if *total > remaining + QTY_EPS {
+            return Err(StoreError::invalid(format!(
+                "Line {}: only {} of {} can still be returned.",
+                i + 1,
+                qty_str(remaining),
+                qty_str(sold)
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Records a sale or a return (`kind` 'return': a refund of a local sale).
 pub fn sale_commit(store: &mut Store, sale: Value) -> Result<CommitResult> {
     let input: SaleInput = serde_json::from_value(sale.clone())
         .map_err(|e| StoreError::invalid(format!("Sale: {e}")))?;
@@ -237,9 +352,18 @@ pub fn sale_commit(store: &mut Store, sale: Value) -> Result<CommitResult> {
             "That shift is closed; open a new shift to sell.",
         ));
     }
+    if input.is_return() {
+        check_return(store, &input)?;
+    }
     let code = device_code(store)?;
     ensure_storage(store)?;
 
+    let is_return = input.is_return();
+    let original = if is_return {
+        input.original_transaction_id.as_deref()
+    } else {
+        None
+    };
     let now = now_str();
     let tx = store
         .conn
@@ -264,8 +388,8 @@ pub fn sale_commit(store: &mut Store, sale: Value) -> Result<CommitResult> {
     tx.execute(
         "INSERT INTO sales(transaction_id, local_seq, receipt_number, kind, recorded_at, cashier_id,
                            branch_id, terminal_id, shift_local_id, customer_id, total, totals_json,
-                           created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                           created_at, original_transaction_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             input.transaction_id,
             seq,
@@ -280,20 +404,23 @@ pub fn sale_commit(store: &mut Store, sale: Value) -> Result<CommitResult> {
             total_of(&input.totals),
             serde_json::to_string(&input.totals)?,
             now,
+            original,
         ],
     )?;
     failpoint::hit("sale_after_header");
     {
         let mut line = tx.prepare_cached(
             "INSERT INTO sale_lines(transaction_id, line_no, product_id, product_snapshot_json, qty,
-                                    unit_price, discount, vat_rate, vat_amount, line_total)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                                    unit_price, discount, vat_rate, vat_amount, line_total,
+                                    original_line_no, restock)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         )?;
         let mut delta = tx.prepare_cached(
             "INSERT INTO local_stock_delta(transaction_id, product_id, qty_delta, created_at)
              VALUES (?1, ?2, ?3, ?4)",
         )?;
         for (i, l) in input.lines.iter().enumerate() {
+            let restock = is_return && l.restock.unwrap_or(false);
             line.execute(params![
                 input.transaction_id,
                 i as i64 + 1,
@@ -305,9 +432,18 @@ pub fn sale_commit(store: &mut Store, sale: Value) -> Result<CommitResult> {
                 l.vat_rate,
                 l.vat_amount,
                 l.line_total,
+                if is_return { l.original_line_no } else { None },
+                restock as i64,
             ])?;
-            if let Some(pid) = l.product_id.as_deref().filter(|p| !p.is_empty()) {
-                delta.execute(params![input.transaction_id, pid, -l.qty, now])?;
+            // A sale takes stock off the shelf; a return puts back only what is restocked.
+            let qty_delta = match (is_return, restock) {
+                (false, _) => Some(-l.qty),
+                (true, true) => Some(l.qty),
+                (true, false) => None,
+            };
+            let pid = l.product_id.as_deref().filter(|p| !p.is_empty());
+            if let (Some(pid), Some(d)) = (pid, qty_delta) {
+                delta.execute(params![input.transaction_id, pid, d, now])?;
             }
         }
     }
@@ -333,17 +469,25 @@ pub fn sale_commit(store: &mut Store, sale: Value) -> Result<CommitResult> {
     }
     tx.execute(
         "INSERT INTO outbox(transaction_id, kind, status, payload_json, created_at, updated_at)
-         VALUES (?1, 'sale', 'pending', ?2, ?3, ?3)",
-        params![input.transaction_id, payload_json, now],
+         VALUES (?1, ?2, 'pending', ?3, ?4, ?4)",
+        params![input.transaction_id, input.kind, payload_json, now],
     )?;
     failpoint::hit("sale_after_outbox");
-    db::audit_insert(
-        &tx,
-        "sale_recorded",
-        Some(&input.cashier_id),
-        &json!({ "transactionId": input.transaction_id, "receiptNumber": receipt,
-                 "total": total_of(&input.totals), "offline": true }),
-    )?;
+    let (audit_kind, detail) = if is_return {
+        (
+            "return_recorded",
+            json!({ "transactionId": input.transaction_id, "receiptNumber": receipt,
+                    "originalTransactionId": original, "total": total_of(&input.totals),
+                    "offline": true }),
+        )
+    } else {
+        (
+            "sale_recorded",
+            json!({ "transactionId": input.transaction_id, "receiptNumber": receipt,
+                    "total": total_of(&input.totals), "offline": true }),
+        )
+    };
+    db::audit_insert(&tx, audit_kind, Some(&input.cashier_id), &detail)?;
     failpoint::hit("sale_before_commit");
     tx.commit()?;
     failpoint::hit("sale_after_commit");
@@ -560,22 +704,60 @@ pub struct SaleSummary {
     pub sync_status: Option<String>,
     pub server_id: Option<String>,
     pub synced_at: Option<String>,
+    /// 'sale' or 'return'.
+    pub kind: String,
+    /// A return: the local sale it refunds.
+    pub original_transaction_id: Option<String>,
 }
 
+fn non_empty(v: Option<String>) -> Option<String> {
+    v.map(|x| x.trim().to_string()).filter(|x| !x.is_empty())
+}
+
+/// Newest first. Optional filters (AND): `kind` ('sale' | 'return'), the sale a
+/// return refunds, and an exact receipt number (case-insensitive).
 pub fn sales_recent(
     store: &Store,
     limit: Option<i64>,
     offset: Option<i64>,
+    kind: Option<String>,
+    original_transaction_id: Option<String>,
+    receipt_number: Option<String>,
 ) -> Result<Vec<SaleSummary>> {
+    use rusqlite::types::Value as Sql;
     let limit = limit.unwrap_or(50).clamp(1, 500);
     let offset = offset.unwrap_or(0).max(0);
-    let mut st = store.conn.prepare_cached(
+    let mut filters: Vec<&str> = Vec::new();
+    let mut binds: Vec<Sql> = vec![Sql::Integer(limit), Sql::Integer(offset)];
+    if let Some(k) = kind {
+        if k != "sale" && k != "return" {
+            return Err(StoreError::invalid("kind must be 'sale' or 'return'."));
+        }
+        filters.push("s.kind = ?");
+        binds.push(Sql::Text(k));
+    }
+    if let Some(o) = non_empty(original_transaction_id) {
+        filters.push("s.original_transaction_id = ?");
+        binds.push(Sql::Text(o));
+    }
+    if let Some(r) = non_empty(receipt_number) {
+        filters.push("s.receipt_number = ? COLLATE NOCASE");
+        binds.push(Sql::Text(r));
+    }
+    let mut where_sql = String::new();
+    for (i, f) in filters.iter().enumerate() {
+        where_sql.push_str(if i == 0 { " WHERE " } else { " AND " });
+        where_sql.push_str(&f.replace('?', &format!("?{}", i + 3)));
+    }
+    let sql = format!(
         "SELECT s.transaction_id, s.receipt_number, s.local_seq, s.recorded_at, s.cashier_id,
-                s.customer_id, s.shift_local_id, s.total, o.status, o.server_id, o.synced_at
-         FROM sales s LEFT JOIN outbox o ON o.transaction_id = s.transaction_id
-         ORDER BY s.local_seq DESC LIMIT ?1 OFFSET ?2",
-    )?;
-    let rows = st.query_map(params![limit, offset], |r| {
+                s.customer_id, s.shift_local_id, s.total, o.status, o.server_id, o.synced_at,
+                s.kind, s.original_transaction_id
+         FROM sales s LEFT JOIN outbox o ON o.transaction_id = s.transaction_id{where_sql}
+         ORDER BY s.local_seq DESC LIMIT ?1 OFFSET ?2"
+    );
+    let mut st = store.conn.prepare_cached(&sql)?;
+    let rows = st.query_map(rusqlite::params_from_iter(binds), |r| {
         Ok(SaleSummary {
             transaction_id: r.get(0)?,
             receipt_number: r.get(1)?,
@@ -588,6 +770,8 @@ pub fn sales_recent(
             sync_status: r.get(8)?,
             server_id: r.get(9)?,
             synced_at: r.get(10)?,
+            kind: r.get(11)?,
+            original_transaction_id: r.get(12)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

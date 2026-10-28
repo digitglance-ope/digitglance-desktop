@@ -226,17 +226,17 @@ fn migrations_up_from_empty_and_idempotent() {
         assert_eq!(n, 1, "table {t}");
     }
     // Re-running is a no-op.
-    assert_eq!(migrations::migrate(&mut c).unwrap(), 1);
+    assert_eq!(migrations::migrate(&mut c).unwrap(), 2);
     let applied: i64 = c
         .query_row("SELECT count(*) FROM schema_migrations", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(applied, 1);
+    assert_eq!(applied, 2);
 }
 
 #[test]
 fn migrations_apply_only_newer_steps_and_refuse_a_newer_db() {
     let mut c = Connection::open_in_memory().unwrap();
-    migrations::migrate(&mut c).unwrap();
+    migrations::migrate_with(&mut c, &migrations::MIGRATIONS[..1]).unwrap();
     let next = [
         migrations::Migration {
             version: 1,
@@ -521,7 +521,7 @@ fn sale_commit_writes_everything_once() {
     assert_eq!(got["receiptNumber"], "T01-000001");
     assert_eq!(got["sync"]["status"], "pending");
     assert_eq!(
-        sales::sales_recent(&s, Some(10), None).unwrap()[0].receipt_number,
+        sales::sales_recent(&s, Some(10), None, None, None, None).unwrap()[0].receipt_number,
         "T01-000002"
     );
     assert_eq!(
@@ -1437,6 +1437,728 @@ fn storage_probe_reads_this_volume() {
     let d = tempfile::tempdir().unwrap();
     let (free, total) = storage::os_probe(&d.path().join("x.db")).unwrap();
     assert!(total > 0 && free <= total);
+}
+
+// ---------------------------------------------------------------- returns
+
+/// A return of `original`: (productId, originalLineNo, qty, restock) per line.
+fn ret(tid: &str, original: &str, lines: &[(&str, i64, f64, bool)]) -> Value {
+    let mut v = sale(
+        tid,
+        &lines
+            .iter()
+            .map(|(p, _, q, _)| (*p, *q))
+            .collect::<Vec<_>>(),
+    );
+    v["kind"] = json!("return");
+    v["originalTransactionId"] = json!(original);
+    v["reason"] = json!("customer_changed_mind");
+    for (i, (_, n, _, restock)) in lines.iter().enumerate() {
+        v["lines"][i]["originalLineNo"] = json!(n);
+        v["lines"][i]["restock"] = json!(restock);
+    }
+    v
+}
+
+fn err_msg(r: super::error::Result<sales::CommitResult>) -> (ErrorCode, String) {
+    let e = r.unwrap_err();
+    (e.code, e.message)
+}
+
+#[test]
+fn return_commit_numbers_restocks_and_queues_after_its_sale() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = open_test_store(d.path());
+    catalog::apply_snapshot(
+        &mut s,
+        &snapshot(&[
+            ("p1", "Coke 50cl", None, 10.0),
+            ("p2", "Fanta 50cl", None, 5.0),
+        ]),
+    )
+    .unwrap();
+    let on_hand = |s: &Store, p: &str| catalog::displayed_on_hand(s.conn(), p).unwrap();
+    let a = tid();
+    sales::sale_commit(&mut s, sale(&a, &[("p1", 3.0), ("p2", 2.0)])).unwrap();
+    assert_eq!((on_hand(&s, "p1"), on_hand(&s, "p2")), (7.0, 3.0));
+
+    // Two back on the shelf, one damaged (not restocked).
+    let r = tid();
+    let body = ret(&r, &a, &[("p1", 1, 2.0, true), ("p2", 2, 1.0, false)]);
+    let res = sales::sale_commit(&mut s, body.clone()).unwrap();
+    assert_eq!(
+        res,
+        sales::CommitResult {
+            receipt_number: "T01-000002".into(),
+            local_seq: 2
+        },
+        "returns share the receipt sequence"
+    );
+    assert_eq!((on_hand(&s, "p1"), on_hand(&s, "p2")), (9.0, 3.0));
+    let deltas: Vec<(String, f64)> = {
+        let mut st = s
+            .conn()
+            .prepare(
+                "SELECT product_id, qty_delta FROM local_stock_delta WHERE transaction_id = ?1",
+            )
+            .unwrap();
+        st.query_map([&r], |x| Ok((x.get(0)?, x.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    assert_eq!(deltas, vec![("p1".to_string(), 2.0)]);
+    let (kind, orig): (String, Option<String>) = s
+        .conn()
+        .query_row(
+            "SELECT kind, original_transaction_id FROM sales WHERE transaction_id = ?1",
+            [&r],
+            |x| Ok((x.get(0)?, x.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (kind.as_str(), orig.as_deref()),
+        ("return", Some(a.as_str()))
+    );
+    let lines: Vec<(i64, i64)> = {
+        let mut st = s
+            .conn()
+            .prepare(
+                "SELECT original_line_no, restock FROM sale_lines WHERE transaction_id = ?1 ORDER BY line_no",
+            )
+            .unwrap();
+        st.query_map([&r], |x| Ok((x.get(0)?, x.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    assert_eq!(lines, vec![(1, 1), (2, 0)]);
+    assert_eq!(audit_count(&s, "return_recorded"), 1);
+    assert_eq!(audit_count(&s, "sale_recorded"), 1);
+    let detail: String = s
+        .conn()
+        .query_row(
+            "SELECT detail_json FROM audit_log WHERE kind = 'return_recorded'",
+            [],
+            |x| x.get(0),
+        )
+        .unwrap();
+    let detail: Value = serde_json::from_str(&detail).unwrap();
+    assert_eq!(detail["originalTransactionId"], a.as_str());
+    assert_eq!(detail["receiptNumber"], "T01-000002");
+    assert_eq!(detail["offline"], true);
+
+    // Idempotent: the same transactionId returns the first result, writes nothing.
+    assert_eq!(sales::sale_commit(&mut s, body).unwrap(), res);
+    assert_eq!(count(&s, "sales"), 2);
+    assert_eq!(count(&s, "local_stock_delta"), 3);
+    assert_eq!(audit_count(&s, "return_recorded"), 1);
+    // The next sale continues the shared sequence.
+    assert_eq!(
+        sales::sale_commit(&mut s, sale(&tid(), &[("p1", 1.0)]))
+            .unwrap()
+            .receipt_number,
+        "T01-000003"
+    );
+
+    // sale_get works for a return.
+    let got = sales::sale_get(&s, &r).unwrap();
+    assert_eq!(got["kind"], "return");
+    assert_eq!(got["originalTransactionId"], a.as_str());
+    assert_eq!(got["lines"][0]["originalLineNo"], 1);
+    assert_eq!(got["sync"]["status"], "pending");
+
+    // The queue hands out the return after its sale, payload intact.
+    let batch = queue::next_batch(&s, Some(10)).unwrap();
+    assert_eq!(batch[0].transaction_id, a);
+    assert_eq!(batch[0].kind, "sale");
+    assert_eq!(batch[1].transaction_id, r);
+    assert_eq!(batch[1].kind, "return");
+    assert!(batch[0].seq < batch[1].seq);
+    let p = &batch[1].payload;
+    assert_eq!(p["kind"], "return");
+    assert_eq!(p["originalTransactionId"], a.as_str());
+    assert_eq!(p["lines"][0]["originalLineNo"], 1);
+    assert_eq!(p["lines"][0]["restock"], true);
+    assert_eq!(p["lines"][1]["originalLineNo"], 2);
+    assert_eq!(p["lines"][1]["restock"], false);
+    assert_eq!(p["receiptNumber"], "T01-000002");
+    assert_eq!(p["localSeq"], 2);
+    assert_eq!(p["deviceCode"], "T01");
+    assert_eq!(
+        p["reason"], "customer_changed_mind",
+        "unknown keys are kept"
+    );
+
+    // Accepting the return marks its stock deltas synced, as for a sale.
+    assert_eq!(mark(&mut s, &r, "accepted").synced, 1);
+    let unsynced: i64 = s
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM local_stock_delta WHERE transaction_id = ?1 AND synced_at IS NULL",
+            [&r],
+            |x| x.get(0),
+        )
+        .unwrap();
+    assert_eq!(unsynced, 0);
+    assert_eq!(
+        on_hand(&s, "p1"),
+        8.0,
+        "synced deltas still count until reconciled"
+    );
+
+    // Validation.
+    let mut bad = ret(&tid(), &a, &[("p1", 1, 1.0, true)]);
+    bad["kind"] = json!("refund");
+    assert_eq!(
+        err_msg(sales::sale_commit(&mut s, bad)),
+        (
+            ErrorCode::Invalid,
+            "kind must be 'sale' or 'return'.".into()
+        )
+    );
+    let mut bad = ret(&tid(), &a, &[("p1", 1, 1.0, true)]);
+    bad.as_object_mut().unwrap().remove("originalTransactionId");
+    assert_eq!(
+        err_msg(sales::sale_commit(&mut s, bad)).0,
+        ErrorCode::Invalid
+    );
+    let mut bad = ret(&tid(), &a, &[("p1", 1, 1.0, true)]);
+    bad["lines"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("originalLineNo");
+    assert_eq!(
+        err_msg(sales::sale_commit(&mut s, bad)).0,
+        ErrorCode::Invalid
+    );
+    assert_eq!(
+        err_msg(sales::sale_commit(
+            &mut s,
+            ret(&tid(), &a, &[("p1", 0, 1.0, true)])
+        ))
+        .0,
+        ErrorCode::Invalid
+    );
+    assert_eq!(
+        err_msg(sales::sale_commit(
+            &mut s,
+            ret(&tid(), &a, &[("p1", 9, 1.0, true)])
+        )),
+        (
+            ErrorCode::Invalid,
+            "Line 1: that line is not on the original sale.".into()
+        )
+    );
+    // restock may be left out (false: no stock delta).
+    let mut no_restock = ret(&tid(), &a, &[("p2", 2, 1.0, false)]);
+    no_restock["lines"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("restock");
+    let before = count(&s, "local_stock_delta");
+    sales::sale_commit(&mut s, no_restock).unwrap();
+    assert_eq!(count(&s, "local_stock_delta"), before);
+}
+
+#[test]
+fn return_cannot_refund_more_than_sold_or_an_unknown_or_refused_sale() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = open_test_store(d.path());
+    let a = tid();
+    sales::sale_commit(&mut s, sale(&a, &[("p1", 3.0), ("p2", 1.5)])).unwrap();
+    let nothing_more = |s: &Store, n_sales: i64, seq: i64| {
+        assert_eq!(count(s, "sales"), n_sales);
+        assert_eq!(receipt_seq(s), seq, "a refused return uses no number");
+    };
+    let only = |line: usize, left: &str, sold: &str| {
+        (
+            ErrorCode::Invalid,
+            format!("Line {line}: only {left} of {sold} can still be returned."),
+        )
+    };
+    assert_eq!(
+        err_msg(sales::sale_commit(
+            &mut s,
+            ret(&tid(), &a, &[("p1", 1, 4.0, true)])
+        )),
+        only(1, "3", "3")
+    );
+    // Two lines naming the same original line count together.
+    assert_eq!(
+        err_msg(sales::sale_commit(
+            &mut s,
+            ret(&tid(), &a, &[("p1", 1, 2.0, true), ("p1", 1, 2.0, false)])
+        )),
+        only(2, "3", "3")
+    );
+    nothing_more(&s, 1, 1);
+    // A partial return, then a second one beyond what is left.
+    sales::sale_commit(&mut s, ret(&tid(), &a, &[("p1", 1, 2.0, true)])).unwrap();
+    assert_eq!(
+        err_msg(sales::sale_commit(
+            &mut s,
+            ret(&tid(), &a, &[("p1", 1, 2.0, true)])
+        )),
+        only(1, "1", "3")
+    );
+    sales::sale_commit(&mut s, ret(&tid(), &a, &[("p1", 1, 1.0, true)])).unwrap();
+    assert_eq!(
+        err_msg(sales::sale_commit(
+            &mut s,
+            ret(&tid(), &a, &[("p1", 1, 0.5, true)])
+        )),
+        only(1, "0", "3")
+    );
+    // Fractional quantities, within the 1e-9 tolerance (0.1 + 0.2 + 1.2 = 1.5).
+    sales::sale_commit(&mut s, ret(&tid(), &a, &[("p2", 2, 0.1, false)])).unwrap();
+    sales::sale_commit(&mut s, ret(&tid(), &a, &[("p2", 2, 0.2, false)])).unwrap();
+    assert_eq!(
+        err_msg(sales::sale_commit(
+            &mut s,
+            ret(&tid(), &a, &[("p2", 2, 1.3, false)])
+        )),
+        only(1, "1.2", "1.5")
+    );
+    sales::sale_commit(&mut s, ret(&tid(), &a, &[("p2", 2, 1.2, false)])).unwrap();
+    nothing_more(&s, 6, 6);
+
+    // Unknown original, and a return is not an original.
+    let unknown = (
+        ErrorCode::NotFound,
+        "The original sale is not on this till.".to_string(),
+    );
+    assert_eq!(
+        err_msg(sales::sale_commit(
+            &mut s,
+            ret(&tid(), &tid(), &[("p1", 1, 1.0, true)])
+        )),
+        unknown
+    );
+    let (b, r) = (tid(), tid());
+    sales::sale_commit(&mut s, sale(&b, &[("p1", 1.0)])).unwrap();
+    sales::sale_commit(&mut s, ret(&r, &b, &[("p1", 1, 1.0, true)])).unwrap();
+    assert_eq!(
+        err_msg(sales::sale_commit(
+            &mut s,
+            ret(&tid(), &r, &[("p1", 1, 1.0, true)])
+        )),
+        unknown
+    );
+    // The server refused the original sale.
+    let c = tid();
+    sales::sale_commit(&mut s, sale(&c, &[("p1", 1.0)])).unwrap();
+    mark(&mut s, &c, "failed_permanent");
+    assert_eq!(
+        err_msg(sales::sale_commit(
+            &mut s,
+            ret(&tid(), &c, &[("p1", 1, 1.0, true)])
+        )),
+        (
+            ErrorCode::Invalid,
+            "The server refused the original sale, so it cannot be returned on this till.".into()
+        )
+    );
+    nothing_more(&s, 9, 9);
+}
+
+#[test]
+fn return_commit_is_atomic_when_it_panics_between_statements() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = open_test_store(d.path());
+    let a = tid();
+    sales::sale_commit(&mut s, sale(&a, &[("p1", 2.0), ("p2", 1.0)])).unwrap();
+    for fp in [
+        "sale_after_seq",
+        "sale_after_header",
+        "sale_after_lines",
+        "sale_after_outbox",
+        "sale_before_commit",
+    ] {
+        failpoint::set_panic(Some(fp));
+        let r = catch_unwind(AssertUnwindSafe(|| {
+            sales::sale_commit(
+                &mut s,
+                ret(&tid(), &a, &[("p1", 1, 2.0, true), ("p2", 2, 1.0, true)]),
+            )
+        }));
+        failpoint::set_panic(None);
+        assert!(r.is_err(), "failpoint {fp} should have fired");
+        assert_eq!(count(&s, "sales"), 1);
+        assert_eq!(count(&s, "sale_lines"), 2);
+        assert_eq!(count(&s, "sale_payments"), 1);
+        assert_eq!(count(&s, "outbox"), 1);
+        assert_eq!(count(&s, "local_stock_delta"), 2);
+        assert_eq!(receipt_seq(&s), 1);
+        assert_eq!(audit_count(&s, "return_recorded"), 0);
+    }
+    let r = sales::sale_commit(&mut s, ret(&tid(), &a, &[("p1", 1, 2.0, true)])).unwrap();
+    assert_eq!(r.receipt_number, "T01-000002");
+}
+
+#[test]
+fn sales_recent_filters_by_kind_original_and_receipt() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = open_test_store(d.path());
+    let (a, b, r1, r2, r3) = (tid(), tid(), tid(), tid(), tid());
+    sales::sale_commit(&mut s, sale(&a, &[("p1", 3.0)])).unwrap(); // T01-000001
+    sales::sale_commit(&mut s, sale(&b, &[("p1", 3.0)])).unwrap(); // 2
+    sales::sale_commit(&mut s, ret(&r1, &a, &[("p1", 1, 1.0, true)])).unwrap(); // 3
+    sales::sale_commit(&mut s, ret(&r2, &a, &[("p1", 1, 1.0, true)])).unwrap(); // 4
+    sales::sale_commit(&mut s, ret(&r3, &b, &[("p1", 1, 1.0, true)])).unwrap(); // 5
+    let ids = |k: Option<&str>, o: Option<&str>, rn: Option<&str>| -> Vec<String> {
+        sales::sales_recent(
+            &s,
+            None,
+            None,
+            k.map(str::to_string),
+            o.map(str::to_string),
+            rn.map(str::to_string),
+        )
+        .unwrap()
+        .into_iter()
+        .map(|x| x.transaction_id)
+        .collect()
+    };
+    assert_eq!(
+        ids(None, None, None),
+        vec![r3.clone(), r2.clone(), r1.clone(), b.clone(), a.clone()]
+    );
+    assert_eq!(
+        ids(Some("return"), None, None),
+        vec![r3.clone(), r2.clone(), r1.clone()]
+    );
+    assert_eq!(ids(Some("sale"), None, None), vec![b.clone(), a.clone()]);
+    assert_eq!(ids(None, Some(&a), None), vec![r2.clone(), r1.clone()]);
+    assert_eq!(ids(Some("return"), Some(&b), None), vec![r3.clone()]);
+    assert!(ids(Some("sale"), Some(&a), None).is_empty());
+    assert_eq!(ids(None, None, Some("t01-000001")), vec![a.clone()]);
+    assert_eq!(ids(None, None, Some("T01-000004")), vec![r2.clone()]);
+    assert!(ids(Some("sale"), None, Some("T01-000004")).is_empty());
+    assert!(ids(None, None, Some("T01-999999")).is_empty());
+    let e = sales::sales_recent(&s, None, None, Some("refund".into()), None, None).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Invalid);
+    // Limit and offset still apply after the filters.
+    let page =
+        sales::sales_recent(&s, Some(1), Some(1), Some("return".into()), None, None).unwrap();
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].transaction_id, r2);
+
+    // Summary fields, camelCase on the wire.
+    let all = sales::sales_recent(&s, Some(10), None, None, None, None).unwrap();
+    assert_eq!(all[0].kind, "return");
+    assert_eq!(all[0].original_transaction_id.as_deref(), Some(b.as_str()));
+    assert_eq!(all[4].kind, "sale");
+    assert_eq!(all[4].original_transaction_id, None);
+    let wire = serde_json::to_value(&all[0]).unwrap();
+    assert_eq!(wire["kind"], "return");
+    assert_eq!(wire["originalTransactionId"], b.as_str());
+    assert_eq!(wire["receiptNumber"], "T01-000005");
+}
+
+#[test]
+fn migration_v1_to_v2_keeps_queue_rows_seq_and_payloads() {
+    let d = tempfile::tempdir().unwrap();
+    let path = db::db_path(d.path(), OWNER, DEVICE);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let a = tid();
+    let (synced, failed, gone) = (tid(), tid(), tid());
+    let a_payload = json!({ "transactionId": a, "kind": "sale", "receiptNumber": "T01-000001",
+                            "localSeq": 1, "deviceCode": "T01", "lines": [{ "qty": 2.0 }],
+                            "somethingNew": { "kept": true } });
+    {
+        // A version-1 database, opened the way the v1 app opened it.
+        let mut c = Connection::open(&path).unwrap();
+        let hex: String = KEY.iter().map(|b| format!("{b:02x}")).collect();
+        c.execute_batch(&format!("PRAGMA key = \"x'{hex}'\";"))
+            .unwrap();
+        c.execute_batch("PRAGMA auto_vacuum = INCREMENTAL;")
+            .unwrap();
+        let _: String = c
+            .query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            migrations::migrate_with(&mut c, &migrations::MIGRATIONS[..1]).unwrap(),
+            1
+        );
+        let now = db::now_str();
+        c.execute_batch(&format!(
+            "INSERT INTO meta(key, value) VALUES ('owner_id', '{OWNER}'), ('device_id', '{DEVICE}');
+             INSERT INTO device_identity VALUES (1, '{OWNER}', '{DEVICE}', 'T01', 'branch-ikeja', 'till-1',
+                                                 'https://api.digitglance.com', '{now}');
+             UPDATE sequences SET value = 3 WHERE name = 'receipt';
+             INSERT INTO shifts(shift_local_id, status, cashier_id, opened_at, open_transaction_id, open_payload_json)
+                 VALUES ('shift-1', 'open', 'cashier-1', '{now}', 'open-tx', '{{}}');"
+        ))
+        .unwrap();
+        let ob =
+            "INSERT INTO outbox(transaction_id, kind, status, payload_json, attempts, last_error,
+                                     server_id, flags_json, created_at, updated_at, synced_at)
+                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10)";
+        let none = None::<String>;
+        c.execute(
+            ob,
+            rusqlite::params![
+                "open-tx",
+                "shift_open",
+                "pending",
+                "{\"kind\":\"shift_open\"}",
+                0,
+                none,
+                none,
+                none,
+                now,
+                none
+            ],
+        )
+        .unwrap();
+        type V1Row<'a> = (
+            &'a String,
+            i64,
+            &'a str,
+            i64,
+            Option<&'a str>,
+            Option<&'a str>,
+            Option<&'a str>,
+            Option<String>,
+        );
+        let rows: [V1Row; 3] = [
+            (&a, 1, "pending", 0, None, None, None, None),
+            (
+                &synced,
+                2,
+                "synced",
+                0,
+                None,
+                Some("srv-1"),
+                Some("[\"clock_drift\"]"),
+                Some(now.clone()),
+            ),
+            (
+                &failed,
+                3,
+                "failed",
+                1,
+                Some("date_too_old"),
+                None,
+                None,
+                None,
+            ),
+        ];
+        for (t, seq, status, attempts, err, srv, flags, at) in rows {
+            c.execute(
+                "INSERT INTO sales(transaction_id, local_seq, receipt_number, kind, recorded_at, cashier_id,
+                                   shift_local_id, total, totals_json, created_at)
+                 VALUES (?1, ?2, ?3, 'sale', ?4, 'cashier-1', 'shift-1', 645, '{}', ?4)",
+                rusqlite::params![t, seq, format!("T01-{seq:06}"), now],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO sale_lines(transaction_id, line_no, product_id, product_snapshot_json, qty,
+                                        unit_price, line_total) VALUES (?1, 1, 'p1', '{}', 2, 300, 645)",
+                [t],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO local_stock_delta(transaction_id, product_id, qty_delta, created_at)
+                 VALUES (?1, 'p1', -2, ?2)",
+                rusqlite::params![t, now],
+            )
+            .unwrap();
+            let payload = if t == &a {
+                a_payload.to_string()
+            } else {
+                json!({ "transactionId": t, "kind": "sale" }).to_string()
+            };
+            c.execute(
+                ob,
+                rusqlite::params![t, "sale", status, payload, attempts, err, srv, flags, now, at],
+            )
+            .unwrap();
+        }
+        // A synced row cleanup already removed: its seq (5) must never come back.
+        c.execute(
+            ob,
+            rusqlite::params![
+                gone,
+                "shift_close",
+                "synced",
+                "{}",
+                0,
+                none,
+                none,
+                none,
+                now,
+                now
+            ],
+        )
+        .unwrap();
+        c.execute("DELETE FROM outbox WHERE transaction_id = ?1", [&gone])
+            .unwrap();
+    }
+
+    let mut s = reopen(d.path());
+    assert_eq!(migrations::current_version(s.conn()).unwrap(), 2);
+    let ddl: String = s
+        .conn()
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'outbox'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(ddl.contains("'return'"), "{ddl}");
+    for idx in ["outbox_status", "outbox_synced", "sales_original"] {
+        let n: i64 = s
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                [idx],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "index {idx}");
+    }
+    let batch = queue::next_batch(&s, Some(10)).unwrap();
+    assert_eq!(batch.len(), 2);
+    assert_eq!((batch[0].seq, batch[0].kind.as_str()), (1, "shift_open"));
+    assert_eq!(batch[1].seq, 2);
+    assert_eq!(batch[1].transaction_id, a);
+    assert_eq!(batch[1].payload, a_payload, "payload intact");
+    type Kept = (String, i64, Option<String>, Option<String>, Option<String>);
+    let row = |t: &str| -> Kept {
+        s.conn()
+            .query_row(
+                "SELECT status, attempts, last_error, server_id, flags_json FROM outbox WHERE transaction_id = ?1",
+                [t],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap()
+    };
+    assert_eq!(
+        row(&synced),
+        (
+            "synced".into(),
+            0,
+            None,
+            Some("srv-1".into()),
+            Some("[\"clock_drift\"]".into())
+        )
+    );
+    assert_eq!(
+        row(&failed),
+        ("failed".into(), 1, Some("date_too_old".into()), None, None)
+    );
+    assert_eq!(queue::failed_list(&s).unwrap().len(), 1);
+    // Existing rows read with the new columns' defaults.
+    let (orig, restock): (Option<String>, i64) = s
+        .conn()
+        .query_row(
+            "SELECT s.original_transaction_id, l.restock FROM sales s JOIN sale_lines l USING (transaction_id)
+             WHERE s.transaction_id = ?1",
+            [&a],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((orig, restock), (None, 0));
+    // New items continue above every seq ever used (5 was deleted).
+    let res = sales::sale_commit(&mut s, sale(&tid(), &[("p1", 1.0)])).unwrap();
+    assert_eq!(res.receipt_number, "T01-000004");
+    sales::sale_commit(&mut s, ret(&tid(), &a, &[("p1", 1, 1.0, true)])).unwrap();
+    let seqs: Vec<i64> = queue::next_batch(&s, Some(10))
+        .unwrap()
+        .iter()
+        .map(|i| i.seq)
+        .collect();
+    assert_eq!(seqs, vec![1, 2, 6, 7]);
+    // The failed v1 sale cannot be returned; the synced one can.
+    assert_eq!(
+        err_msg(sales::sale_commit(
+            &mut s,
+            ret(&tid(), &failed, &[("p1", 1, 1.0, true)])
+        ))
+        .0,
+        ErrorCode::Invalid
+    );
+    sales::sale_commit(&mut s, ret(&tid(), &synced, &[("p1", 1, 2.0, false)])).unwrap();
+}
+
+#[test]
+fn loyalty_settings_are_stored_and_unknown_entities_skipped() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = open_test_store(d.path());
+    let mut snap = snapshot(&[("p1", "Coke 50cl", None, 10.0)]);
+    snap["loyalty"] = json!({ "enabled": true, "pointsPerNaira": 0.01, "nairaPerPoint": 1 });
+    catalog::apply_snapshot(&mut s, &snap).unwrap();
+    assert_eq!(
+        db::settings_get(s.conn(), "loyalty").unwrap(),
+        Some(json!({ "enabled": true, "pointsPerNaira": 0.01, "nairaPerPoint": 1 }))
+    );
+    let r = catalog::apply_changes(
+        &mut s,
+        &[
+            json!({ "id": 201, "entity": "loyalty_settings", "entityId": "loyalty", "op": "upsert",
+                    "data": { "enabled": false, "pointsPerNaira": 0.02 } }),
+            json!({ "id": 202, "entity": "gift_card", "entityId": "g1", "op": "upsert",
+                    "data": { "id": "g1" } }),
+            json!({ "id": 203, "entity": "gift_card", "entityId": "g1", "op": "delete" }),
+        ],
+        &json!(203),
+    )
+    .unwrap();
+    assert_eq!((r.applied, r.skipped), (1, 2));
+    assert_eq!(catalog::get_cursor(&s).unwrap(), json!(203));
+    assert_eq!(
+        db::settings_get(s.conn(), "loyalty").unwrap(),
+        Some(json!({ "enabled": false, "pointsPerNaira": 0.02 }))
+    );
+    let r = catalog::apply_changes(
+        &mut s,
+        &[json!({ "id": 204, "entity": "loyalty_settings", "entityId": "loyalty", "op": "delete" })],
+        &json!(204),
+    )
+    .unwrap();
+    assert_eq!(r.applied, 1);
+    assert_eq!(db::settings_get(s.conn(), "loyalty").unwrap(), None);
+}
+
+#[test]
+fn cleanup_removes_old_synced_returns_and_keeps_pending_ones() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = open_test_store(d.path());
+    let (a, r_old, r_pending) = (tid(), tid(), tid());
+    sales::sale_commit(&mut s, sale(&a, &[("p1", 3.0)])).unwrap();
+    sales::sale_commit(&mut s, ret(&r_old, &a, &[("p1", 1, 1.0, true)])).unwrap();
+    sales::sale_commit(&mut s, ret(&r_pending, &a, &[("p1", 1, 1.0, true)])).unwrap();
+    mark(&mut s, &a, "accepted");
+    mark(&mut s, &r_old, "accepted");
+    set_synced_days_ago(&s, &a, 40);
+    set_synced_days_ago(&s, &r_old, 40);
+    let ancient = ts(Utc::now() - Duration::days(400));
+    s.conn()
+        .execute(
+            "UPDATE outbox SET created_at = ?1 WHERE transaction_id = ?2",
+            rusqlite::params![ancient, r_pending],
+        )
+        .unwrap();
+    let r = cleanup::run(&mut s, None, false).unwrap();
+    assert_eq!(
+        (r.sales, r.queue_items),
+        (2, 0),
+        "the sale and its synced return"
+    );
+    assert!(sales::sale_get(&s, &a).is_err());
+    assert!(sales::sale_get(&s, &r_old).is_err());
+    let kept = sales::sale_get(&s, &r_pending).unwrap();
+    assert_eq!(kept["sync"]["status"], "pending");
+    assert_eq!(count(&s, "sales"), 1);
+    assert_eq!(
+        count(&s, "sale_lines"),
+        1,
+        "lines of removed returns are gone"
+    );
+    assert_eq!(count(&s, "sale_payments"), 1);
+    assert_eq!(queue::next_batch(&s, Some(10)).unwrap().len(), 1);
 }
 
 // ---------------------------------------------------------------- contract consistency

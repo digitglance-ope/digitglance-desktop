@@ -100,6 +100,13 @@ handler list.
   row, just before COMMIT, and just after COMMIT): the reopened database holds
   either the whole sale or nothing, and `PRAGMA integrity_check` is `ok`.
 - Print the receipt only after `sale_commit` resolves. Reprint with `sale_get`.
+- Schema versions are migrated on `store_open`, each in its own transaction;
+  a file from a newer app is refused untouched. Version 1 is the initial
+  schema. Version 2 (`returns`) adds returns: the outbox is rebuilt so its
+  `kind` may be `return` (every row, its `seq` and the AUTOINCREMENT counter
+  are kept, so pending items upload unchanged and in order), `sales` gains
+  `original_transaction_id` (indexed), and `sale_lines` gains
+  `original_line_no` and `restock` (default 0).
 
 ## Commands
 
@@ -111,7 +118,7 @@ Ids: 1 to 128 characters of letters, digits and `-` (UUIDs).
 
 ```js
 await invoke('store_open', { ownerId: '0b7e5c1a-...', deviceId: '6f1c...' })
-// -> { "opened": true, "schemaVersion": 1 }
+// -> { "opened": true, "schemaVersion": 2 }
 ```
 
 ### `store_close`
@@ -200,7 +207,8 @@ state writes one audit row (`storage_warning`, `storage_critical`,
 Free-form offline settings as JSON, keyed by 1 to 64 characters of letters,
 digits, `_`, `.`, `-`. The snapshot fills `settings` (VAT rate, currency,
 receipt footer), `offlineSettings` (retention, thresholds, tenders),
-`approvalSettings`, `business`, `branch`, `terminal`, `device`. The store itself
+`approvalSettings`, `business`, `branch`, `terminal`, `device`, `loyalty`
+(the business's loyalty programme settings). The store itself
 reads `offlineSettings.retentionDays` and the four storage thresholds.
 
 ```js
@@ -228,8 +236,9 @@ One `GET /pos/sync/changes` page, in ONE transaction with its cursor. Entities:
 `product`, `price` (`sellingPrice` only), `category`, `stock`, `customer`,
 `user` (staff; a delete matches the membership id or the user id), and the
 settings entities `settings`, `vat`, `approval_settings` -> `approvalSettings`,
-`offline_settings` -> `offlineSettings`. Unknown entities are skipped and
-counted, never fatal.
+`offline_settings` -> `offlineSettings`, `loyalty_settings` -> `loyalty`.
+Unknown entities are skipped and counted in `skipped`, never fatal (the rest
+of the page and its cursor still apply).
 
 ```js
 await invoke('catalog_apply_changes', { rows: page.changes, cursor: page.cursor })
@@ -364,7 +373,7 @@ await invoke('sale_commit', { sale: {
 // -> { "receiptNumber": "T01-000123", "localSeq": 123 }
 ```
 
-Validation (`invalid`): `transactionId` a UUID; `kind` `'sale'`; `recordedAt`
+Validation (`invalid`): `transactionId` a UUID; `kind` `'sale'` or `'return'`; `recordedAt`
 RFC 3339; `cashierId`, `branchId`, `terminalId`, `shiftLocalId` non-empty; at
 least one line; `qty > 0`; every number finite; `productSnapshot` and `totals`
 objects; `method` and `confirmationStatus` 2 to 32 lower-case letters or `_`.
@@ -376,6 +385,51 @@ totals and the server re-checks them.
 **Upload payload.** The outbox payload is the sale object exactly as passed,
 plus `receiptNumber`, `localSeq` and `deviceCode`. That is what
 `queue_next_batch` returns and what should be uploaded.
+
+**Returns (refunds).** `sale_commit` with `kind: 'return'` records a refund of
+a sale made on this till. Same shape and rules as a sale (validation, one
+transaction, idempotency by `transactionId`, closed-shift refusal, critical
+storage, failure points), and the same `receipt` sequence: returns and sales
+share one numbering, so a return gets the next `<deviceCode>-<6 digits>`.
+Extra fields:
+
+- `originalTransactionId` (required, a UUID): the local sale being returned.
+  It must be a sale (not a return) stored on this device, else `not_found`
+  "The original sale is not on this till." (for example already cleaned by
+  retention). If that sale's queue item is `failed` (the server refused it),
+  `invalid` "The server refused the original sale, so it cannot be returned
+  on this till."
+- each line: `originalLineNo` (required, integer 1 or more: the 1-based line
+  of the original sale) and `restock` (boolean, default `false`). A line not
+  on the original is `invalid` "Line {i}: that line is not on the original
+  sale.". The quantity may not exceed what was sold on that line less what
+  earlier returns of the same sale already refunded on it (lines of one
+  return naming the same original line count together; tolerance 1e-9), else
+  `invalid` "Line {i}: only {remaining} of {sold} can still be returned."
+
+The return is stored as `sales.kind = 'return'` with
+`original_transaction_id`, its lines with `original_line_no` and `restock`,
+an outbox item of kind `return` (payload = the object passed plus
+`receiptNumber`, `localSeq`, `deviceCode`, unknown keys kept) and a
+`return_recorded` audit row (`transactionId`, `receiptNumber`,
+`originalTransactionId`, `total`, `offline: true`). Stock: a restocked line
+with a `productId` writes a `+qty` local stock delta (the display goes back
+up); a line not restocked (damaged, written off) writes none. Accepting the
+return in `queue_mark` marks its deltas synced, as for a sale.
+
+```js
+await invoke('sale_commit', { sale: {
+  transactionId: '0192f0c4-...', kind: 'return', originalTransactionId: '0192f0b6-6f6e-7c3a-9a51-3a0f1e2d4c5b',
+  recordedAt: '2026-10-27T11:00:00.000Z', cashierId: '8a2e...', approvals: [...],
+  branchId: 'b1...', terminalId: 't1...', shiftLocalId: 'shift-0192f0a1', customerId: null,
+  lines: [{ originalLineNo: 1, restock: true, productId: 'p1', productSnapshot: { name: 'Coke 50cl', sku: 'CK50' },
+            qty: 1, unitPrice: 300, discount: 0, vatRate: 7.5, vatAmount: 22.5, lineTotal: 322.5 }],
+  payments: [{ method: 'cash', amount: 322.5, confirmationStatus: 'confirmed' }],
+  totals: { subtotal: 300, discount: 0, vat: 22.5, total: 322.5 },
+  notes: 'Wrong flavour',
+} })
+// -> { "receiptNumber": "T01-000124", "localSeq": 124 }
+```
 
 ### `shift_open` / `shift_close`
 
@@ -405,19 +459,31 @@ await invoke('shift_close', { shift: { transactionId, shiftLocalId: 'shift-0192f
 
 ### `sales_recent`
 
-Newest first. `limit` default 50 (at most 500), `offset` default 0.
+Newest first, sales and returns together. `limit` default 50 (at most 500),
+`offset` default 0. Optional filters, combined with AND: `kind` (`'sale'` or
+`'return'`; anything else is `invalid`), `originalTransactionId` (the returns
+of one sale) and `receiptNumber` (exact, case-insensitive). An empty string
+for the last two means no filter. `kind` and `originalTransactionId` are in
+every row (`originalTransactionId` is `null` for a sale).
+
+```js
+await invoke('sales_recent', { limit: 20, offset: 0 })
+await invoke('sales_recent', { kind: 'return', originalTransactionId: '0192f0b6-...' })  // returns of a sale
+await invoke('sales_recent', { receiptNumber: 't01-000123' })                            // look up a receipt
+```
 
 ```json
 [{ "transactionId": "...", "receiptNumber": "T01-000123", "localSeq": 123,
    "recordedAt": "2026-10-27T09:00:00.000Z", "cashierId": "8a2e...", "customerId": null,
    "shiftLocalId": "shift-0192f0a1", "total": 645, "syncStatus": "pending",
-   "serverId": null, "syncedAt": null }]
+   "serverId": null, "syncedAt": null, "kind": "sale", "originalTransactionId": null }]
 ```
 
 ### `sale_get`
 
-The sale exactly as committed (the upload payload, for reprint) plus a `sync`
-block; `not_found` if it is not on this device (for example already cleaned).
+The sale (or return) exactly as committed (the upload payload, for reprint)
+plus a `sync` block; `not_found` if it is not on this device (for example
+already cleaned).
 
 ```json
 { "transactionId": "...", "receiptNumber": "T01-000123", "localSeq": 123, "deviceCode": "T01",
@@ -430,7 +496,9 @@ block; `not_found` if it is not on this device (for example already cleaned).
 
 Items with status `pending`, and `failed_transient` items whose
 `nextAttemptAt` has passed, in creation order (so a shift open goes before its
-sales, and its close after them). `limit` default 50, at most 500.
+sales, its close after them, and a return after the sale it refunds). `kind`
+is `sale`, `return`, `shift_open` or `shift_close`. `limit` default 50, at
+most 500.
 
 ```json
 [{ "seq": 41, "transactionId": "...", "kind": "sale", "status": "pending",
@@ -483,7 +551,7 @@ with `attempts = 0`; keeps `lastError` until the next answer. Audit row
 
 ### `cleanup_run`
 
-Deletes ONLY sales whose upload was accepted (`synced`) more than
+Deletes ONLY sales and returns whose upload was accepted (`synced`) more than
 `retentionDays` ago (argument, else `offlineSettings.retentionDays`, else 30;
 1 to 3650), with their lines and payments, their stock deltas once
 reconciled, other synced queue items past retention, closed shifts with
@@ -623,7 +691,13 @@ test is then reported as ignored with that reason, and CI
 (`.github/workflows/local-store-tests.yml`, windows-latest) runs the full
 SQLCipher suite and clippy.
 
-Covered: migrations from empty, re-run and newer-DB refusal; WAL / FULL /
+Covered: migrations from empty, re-run and newer-DB refusal; v1 -> v2 with
+pending, synced and failed queue rows (payloads, statuses and `seq` kept, the
+counter continues past deleted rows); returns (shared numbering, restock and
+write-off stock, over-refund after earlier returns, unknown and refused
+originals, idempotency, atomicity, queue order and payload, `queue_mark`
+deltas, `sales_recent` filters, cleanup); loyalty settings and unknown
+entities in delta pages; WAL / FULL /
 incremental auto-vacuum; tenant binding; wrong key, copied file, plain open and
 no plaintext on disk (SQLCipher); key created once and never silently
 replaced; Windows Credential Manager round trip (skips with a message if the
