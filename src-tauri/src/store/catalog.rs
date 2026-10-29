@@ -64,6 +64,14 @@ pub fn terms_of(name: &str) -> Vec<String> {
     out
 }
 
+/// 'service' or 'stock'; anything else, or missing (an older server), is 'stock'.
+fn item_type_of(p: &Value) -> &'static str {
+    match s(p, "itemType") {
+        Some("service") => "service",
+        _ => "stock",
+    }
+}
+
 fn upsert_product(tx: &Connection, p: &Value) -> Result<()> {
     let id = req_id(p, "product")?;
     let name = s(p, "name").unwrap_or("").to_string();
@@ -72,13 +80,15 @@ fn upsert_product(tx: &Connection, p: &Value) -> Result<()> {
     let barcode = s(p, "barcode");
     tx.execute(
         "INSERT INTO products(id, name, name_lc, sku, sku_lc, barcode, barcode_lc, category_id,
-                              selling_price, is_active, data_json, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                              selling_price, is_active, data_json, updated_at, item_type,
+                              sold_by_fraction)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
          ON CONFLICT(id) DO UPDATE SET name = excluded.name, name_lc = excluded.name_lc,
              sku = excluded.sku, sku_lc = excluded.sku_lc, barcode = excluded.barcode,
              barcode_lc = excluded.barcode_lc, category_id = excluded.category_id,
              selling_price = excluded.selling_price, is_active = excluded.is_active,
-             data_json = excluded.data_json, updated_at = excluded.updated_at",
+             data_json = excluded.data_json, updated_at = excluded.updated_at,
+             item_type = excluded.item_type, sold_by_fraction = excluded.sold_by_fraction",
         params![
             id,
             name,
@@ -92,6 +102,9 @@ fn upsert_product(tx: &Connection, p: &Value) -> Result<()> {
             b(p, "isActive", true) as i64,
             serde_json::to_string(p)?,
             s(p, "updatedAt"),
+            item_type_of(p),
+            // Only a JSON `true` sells part units; missing (older server) is whole units.
+            b(p, "soldByFraction", false) as i64,
         ],
     )?;
     tx.execute("DELETE FROM product_terms WHERE product_id = ?1", [id])?;
@@ -431,7 +444,7 @@ const PRODUCT_COLS: &str = "p.data_json, p.selling_price,
     s.on_hand, s.reserved, s.reorder_level,
     (SELECT COALESCE(SUM(d.qty_delta), 0) FROM local_stock_delta d
       WHERE d.product_id = p.id AND d.reconciled_at IS NULL) AS local_delta,
-    s.product_id IS NOT NULL AS has_stock";
+    s.product_id IS NOT NULL AS has_stock, p.item_type, p.sold_by_fraction";
 
 fn product_row(r: &rusqlite::Row) -> rusqlite::Result<Value> {
     let data: String = r.get(0)?;
@@ -443,6 +456,9 @@ fn product_row(r: &rusqlite::Row) -> rusqlite::Result<Value> {
         if let Some(price) = r.get::<_, Option<f64>>(1)? {
             o.insert("sellingPrice".into(), json!(price));
         }
+        // Always present (the columns, not the blob), so the till never guesses.
+        o.insert("itemType".into(), json!(r.get::<_, String>(7)?));
+        o.insert("soldByFraction".into(), json!(r.get::<_, bool>(8)?));
         o.insert(
             "stock".into(),
             json!({

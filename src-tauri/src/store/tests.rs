@@ -226,11 +226,14 @@ fn migrations_up_from_empty_and_idempotent() {
         assert_eq!(n, 1, "table {t}");
     }
     // Re-running is a no-op.
-    assert_eq!(migrations::migrate(&mut c).unwrap(), 2);
+    assert_eq!(
+        migrations::migrate(&mut c).unwrap(),
+        migrations::latest_version()
+    );
     let applied: i64 = c
         .query_row("SELECT count(*) FROM schema_migrations", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(applied, 2);
+    assert_eq!(applied, migrations::latest_version());
 }
 
 #[test]
@@ -1998,7 +2001,10 @@ fn migration_v1_to_v2_keeps_queue_rows_seq_and_payloads() {
     }
 
     let mut s = reopen(d.path());
-    assert_eq!(migrations::current_version(s.conn()).unwrap(), 2);
+    assert_eq!(
+        migrations::current_version(s.conn()).unwrap(),
+        migrations::latest_version()
+    );
     let ddl: String = s
         .conn()
         .query_row(
@@ -2120,6 +2126,186 @@ fn loyalty_settings_are_stored_and_unknown_entities_skipped() {
     .unwrap();
     assert_eq!(r.applied, 1);
     assert_eq!(db::settings_get(s.conn(), "loyalty").unwrap(), None);
+}
+
+// ------------------------------------------------- item type and fractions
+
+/// `(itemType, soldByFraction)` as the read commands return them.
+fn kind_of(p: &Value) -> (Value, Value) {
+    (p["itemType"].clone(), p["soldByFraction"].clone())
+}
+
+#[test]
+fn migration_v2_to_v3_gives_existing_products_the_defaults() {
+    let d = tempfile::tempdir().unwrap();
+    let path = db::db_path(d.path(), OWNER, DEVICE);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    {
+        // A version-2 database with products, opened the way the v2 app opened it.
+        let mut c = Connection::open(&path).unwrap();
+        let hex: String = KEY.iter().map(|b| format!("{b:02x}")).collect();
+        c.execute_batch(&format!("PRAGMA key = \"x'{hex}'\";"))
+            .unwrap();
+        c.execute_batch("PRAGMA auto_vacuum = INCREMENTAL;")
+            .unwrap();
+        let _: String = c
+            .query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            migrations::migrate_with(&mut c, &migrations::MIGRATIONS[..2]).unwrap(),
+            2
+        );
+        let now = db::now_str();
+        c.execute_batch(&format!(
+            "INSERT INTO meta(key, value) VALUES ('owner_id', '{OWNER}'), ('device_id', '{DEVICE}');
+             INSERT INTO device_identity VALUES (1, '{OWNER}', '{DEVICE}', 'T01', 'branch-ikeja', 'till-1',
+                                                 'https://api.digitglance.com', '{now}');"
+        ))
+        .unwrap();
+        let ins = "INSERT INTO products(id, name, name_lc, sku, sku_lc, is_active, data_json)
+                   VALUES (?1, ?2, lower(?2), ?3, lower(?3), 1, ?4)";
+        // An older server's product (no new fields), and two whose stored objects
+        // already carry them (a newer feed applied by the v2 app).
+        let rows = [
+            json!({ "id": "p1", "name": "Coke 50cl", "sku": "CK50" }),
+            json!({ "id": "p2", "name": "Rice per kg", "sku": "RICE", "itemType": "stock",
+                    "soldByFraction": true }),
+            json!({ "id": "p3", "name": "Delivery", "sku": "DLV", "itemType": "service",
+                    "soldByFraction": false }),
+        ];
+        for p in &rows {
+            c.execute(
+                ins,
+                rusqlite::params![
+                    p["id"].as_str().unwrap(),
+                    p["name"].as_str().unwrap(),
+                    p["sku"].as_str().unwrap(),
+                    p.to_string()
+                ],
+            )
+            .unwrap();
+        }
+    }
+
+    let mut s = reopen(d.path());
+    assert_eq!(migrations::current_version(s.conn()).unwrap(), 3);
+    let ps = catalog::get_products(&s, &["p1".into(), "p2".into(), "p3".into()]).unwrap();
+    assert_eq!(ps.len(), 3);
+    assert_eq!(kind_of(&ps[0]), (json!("stock"), json!(false)));
+    assert_eq!(kind_of(&ps[1]), (json!("stock"), json!(true)));
+    assert_eq!(kind_of(&ps[2]), (json!("service"), json!(false)));
+    // The CHECK holds on the migrated table.
+    assert!(s
+        .conn()
+        .execute(
+            "UPDATE products SET item_type = 'bundle' WHERE id = 'p1'",
+            []
+        )
+        .is_err());
+    // A later feed row still updates a migrated product.
+    catalog::apply_changes(
+        &mut s,
+        &[
+            json!({ "entity": "product", "entityId": "p1", "op": "upsert",
+                  "data": { "id": "p1", "name": "Coke 50cl", "sku": "CK50", "isActive": true,
+                            "itemType": "service" } }),
+        ],
+        &json!(1),
+    )
+    .unwrap();
+    let p1 = catalog::get_products(&s, &["p1".into()]).unwrap();
+    assert_eq!(kind_of(&p1[0]), (json!("service"), json!(false)));
+}
+
+#[test]
+fn item_type_and_fraction_are_stored_updated_and_returned() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = open_test_store(d.path());
+    let mut snap = snapshot(&[
+        ("p1", "Coke 50cl", Some("6001"), 10.0),
+        ("p2", "Rice per kg", Some("6002"), 50.0),
+        ("p3", "Delivery fee", None, 0.0),
+    ]);
+    // p1 as an older server sends it (no fields); p2 fractional; p3 a service.
+    snap["products"][1]["itemType"] = json!("stock");
+    snap["products"][1]["soldByFraction"] = json!(true);
+    snap["products"][2]["itemType"] = json!("service");
+    snap["products"][2]["soldByFraction"] = json!(false);
+    catalog::apply_snapshot(&mut s, &snap).unwrap();
+    let stored: Vec<(String, String, i64)> = {
+        let mut st = s
+            .conn()
+            .prepare("SELECT id, item_type, sold_by_fraction FROM products ORDER BY id")
+            .unwrap();
+        let rows = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap();
+        rows.collect::<rusqlite::Result<_>>().unwrap()
+    };
+    assert_eq!(
+        stored,
+        vec![
+            ("p1".into(), "stock".into(), 0),
+            ("p2".into(), "stock".into(), 1),
+            ("p3".into(), "service".into(), 0),
+        ]
+    );
+    // Every read command returns both fields, camelCase.
+    let ps = catalog::get_products(&s, &["p1".into(), "p2".into(), "p3".into()]).unwrap();
+    assert_eq!(kind_of(&ps[0]), (json!("stock"), json!(false)));
+    assert_eq!(kind_of(&ps[1]), (json!("stock"), json!(true)));
+    assert_eq!(kind_of(&ps[2]), (json!("service"), json!(false)));
+    let hit = catalog::by_barcode(&s, "6002").unwrap().unwrap();
+    assert_eq!(kind_of(&hit), (json!("stock"), json!(true)));
+    let found = catalog::search(&s, "delivery", None, None).unwrap();
+    assert_eq!(kind_of(&found[0]), (json!("service"), json!(false)));
+    let all = catalog::search(&s, "", None, None).unwrap();
+    assert_eq!(all.len(), 3);
+    for p in all {
+        assert!(
+            p["itemType"].is_string() && p["soldByFraction"].is_boolean(),
+            "{p}"
+        );
+    }
+
+    // Changes: p1 becomes fractional, p2 loses the flags (an older server's row
+    // means the defaults), p3 sends an unknown kind and a non-boolean flag (both
+    // fall back to the defaults); a price row keeps what the product has.
+    let r = catalog::apply_changes(
+        &mut s,
+        &[
+            json!({ "entity": "product", "entityId": "p1", "op": "upsert",
+                    "data": { "id": "p1", "name": "Coke 50cl", "barcode": "6001", "isActive": true,
+                              "itemType": "stock", "soldByFraction": true } }),
+            json!({ "entity": "product", "entityId": "p2", "op": "upsert",
+                    "data": { "id": "p2", "name": "Rice per kg", "barcode": "6002", "isActive": true } }),
+            json!({ "entity": "product", "entityId": "p3", "op": "upsert",
+                    "data": { "id": "p3", "name": "Delivery fee", "isActive": true,
+                              "itemType": "bundle", "soldByFraction": "yes" } }),
+            json!({ "entity": "price", "entityId": "p1", "op": "upsert",
+                    "data": { "id": "p1", "sellingPrice": 320 } }),
+        ],
+        &json!(300),
+    )
+    .unwrap();
+    assert_eq!((r.applied, r.skipped), (4, 0));
+    let ps = catalog::get_products(&s, &["p1".into(), "p2".into(), "p3".into()]).unwrap();
+    assert_eq!(kind_of(&ps[0]), (json!("stock"), json!(true)));
+    assert_eq!(ps[0]["sellingPrice"], 320.0);
+    assert_eq!(kind_of(&ps[1]), (json!("stock"), json!(false)));
+    assert_eq!(kind_of(&ps[2]), (json!("stock"), json!(false)));
+    catalog::apply_changes(
+        &mut s,
+        &[
+            json!({ "entity": "product", "entityId": "p3", "op": "upsert",
+                  "data": { "id": "p3", "name": "Delivery fee", "isActive": true,
+                            "itemType": "service" } }),
+        ],
+        &json!(301),
+    )
+    .unwrap();
+    let p3 = catalog::get_products(&s, &["p3".into()]).unwrap();
+    assert_eq!(kind_of(&p3[0]), (json!("service"), json!(false)));
 }
 
 #[test]

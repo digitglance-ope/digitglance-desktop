@@ -106,7 +106,11 @@ handler list.
   `kind` may be `return` (every row, its `seq` and the AUTOINCREMENT counter
   are kept, so pending items upload unchanged and in order), `sales` gains
   `original_transaction_id` (indexed), and `sale_lines` gains
-  `original_line_no` and `restock` (default 0).
+  `original_line_no` and `restock` (default 0). Version 3
+  (`product_item_type_fraction`) adds `products.item_type` (`'stock'` or
+  `'service'`, default `'stock'`) and `products.sold_by_fraction` (0/1,
+  default 0); existing products take the defaults unless their stored server
+  object already carries `itemType` / `soldByFraction`.
 
 ## Commands
 
@@ -118,7 +122,7 @@ Ids: 1 to 128 characters of letters, digits and `-` (UUIDs).
 
 ```js
 await invoke('store_open', { ownerId: '0b7e5c1a-...', deviceId: '6f1c...' })
-// -> { "opened": true, "schemaVersion": 2 }
+// -> { "opened": true, "schemaVersion": 3 }
 ```
 
 ### `store_close`
@@ -225,6 +229,13 @@ the `GET /pos/sync/snapshot` body as is. The arrays `products`, `categories`,
 a missing one, or a row without an id, rejects with `invalid` and changes
 nothing. Stock rows for another branch than the paired one are ignored.
 
+Each product row may carry `itemType` (`'stock'` or `'service'`) and
+`soldByFraction` (boolean). Both are stored in their own columns. A missing
+field (an older server), an unknown `itemType` or a non-boolean
+`soldByFraction` stores the default: `'stock'`, whole units (`false`). The
+same applies to `product` rows in `catalog_apply_changes`; a product upsert
+replaces both values, a `price` row leaves them as they are.
+
 ```js
 await invoke('catalog_apply_snapshot', { snapshot })
 // -> { "products": 20000, "categories": 40, "stock": 20000, "customers": 812, "staff": 9, "cursor": 48211 }
@@ -270,13 +281,17 @@ An empty `q` lists the category (or everything) by name.
 await invoke('catalog_search', { q: 'gold rice', categoryId: null, limit: 30 })
 ```
 
-Each product is the server's product object with `sellingPrice` kept current
-and a `stock` block:
+Each product is the server's product object with `sellingPrice` kept current,
+`itemType` (`"stock"` or `"service"`) and `soldByFraction` (boolean) always
+present (from the stored columns, so the defaults `"stock"` / `false` when the
+feed did not send them), and a `stock` block. The same shape is returned by
+`catalog_by_barcode` and `catalog_get_products`:
 
 ```json
 {
   "id": "p1", "sku": "CK50", "barcode": "5449000000996", "name": "Coke 50cl",
   "categoryId": "cat-drinks", "sellingPrice": 300, "isActive": true, "vatClass": "standard",
+  "itemType": "stock", "soldByFraction": false,
   "stock": { "onHand": 7, "serverOnHand": 10, "localDelta": -3, "reserved": 0,
              "reorderLevel": null, "tracked": true }
 }
