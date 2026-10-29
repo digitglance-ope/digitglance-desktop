@@ -24,6 +24,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "returns",
         sql: V2,
     },
+    Migration {
+        version: 3,
+        name: "product_item_type_fraction",
+        sql: V3,
+    },
 ];
 
 pub fn latest_version() -> i64 {
@@ -335,4 +340,20 @@ ALTER TABLE sales ADD COLUMN original_transaction_id TEXT;
 CREATE INDEX sales_original ON sales(original_transaction_id) WHERE original_transaction_id IS NOT NULL;
 ALTER TABLE sale_lines ADD COLUMN original_line_no INTEGER;
 ALTER TABLE sale_lines ADD COLUMN restock INTEGER NOT NULL DEFAULT 0;
+"#;
+
+/// Schema 3: product kind and fractional selling. `item_type` is 'stock' or
+/// 'service' (a service is never stock-checked); `sold_by_fraction` 1 lets the
+/// till sell part units (e.g. 1.5 kg). Existing rows take the defaults unless
+/// their stored server object already carries the fields.
+const V3: &str = r#"
+ALTER TABLE products ADD COLUMN item_type TEXT NOT NULL DEFAULT 'stock'
+    CHECK (item_type IN ('stock', 'service'));
+ALTER TABLE products ADD COLUMN sold_by_fraction INTEGER NOT NULL DEFAULT 0;
+UPDATE products SET
+    item_type = CASE WHEN json_extract(data_json, '$.itemType') = 'service'
+                     THEN 'service' ELSE 'stock' END,
+    sold_by_fraction = CASE WHEN json_type(data_json, '$.soldByFraction') = 'true'
+                            THEN 1 ELSE 0 END
+WHERE json_valid(data_json);
 "#;
