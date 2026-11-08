@@ -42,6 +42,10 @@ const COMMANDS: &[&str] = &[
     "audit_mark_sent",
     // The till's button for the web back office window (src/till.rs).
     "open_backoffice",
+    // Silent receipt printing to a printer installed in Windows (src/print.rs);
+    // granted by capabilities/till.json to the till window only.
+    "printers_list",
+    "print_raw",
 ];
 
 fn main() {

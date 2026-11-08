@@ -661,8 +661,37 @@ and School keep their launcher pages.
 
 | Window | Loads | Capabilities |
 |---|---|---|
-| `till` (opens at launch) | `till-dist/index.html` | `default` (core), `local-store` (the 36 commands), `till`: `open_backoffice`, `dialog:allow-save`, `http:default` scoped to `https://api.digitglance.com/*` |
-| `backoffice` (from the till's Back office button, `invoke('open_backoffice')`) | `till-dist/backoffice/index.html`, the connectivity gate, which navigates to `https://digitglance.com/app/dashboard?client=trade-desktop` | `default` (core) only |
+| `till` (opens at launch) | `till-dist/index.html` | `default` (core), `local-store` (the 36 commands), `till`: `open_backoffice`, `printers_list`, `print_raw`, `dialog:allow-save`, `http:default` scoped to `https://api.digitglance.com/*` |
+| `backoffice` (from the till's Back office button, `invoke('open_backoffice')`) | `till-dist/backoffice/index.html`, the connectivity gate, which navigates to `https://digitglance.com/app/dashboard?client=trade-desktop` | `default` (core) only: it prints through the Windows dialog, never silently |
+
+### Silent receipt printing (`src/print.rs`)
+
+The till prints receipts to a printer installed in Windows with no dialog
+(the till's method "Installed printer"; `apps/till/src/lib/desktop-print-bridge.ts`
+in the web monorepo is the caller, as `window.DigitGlancePrint`). Both
+commands are desktop only, granted by `capabilities/till.json` to the `till`
+window, and listed in `build.rs`; `print::tests` checks the four places agree
+and that neither `default.json` nor `local-store.json` grants them. Errors are
+the same `{ code, message }` shape as the store's, with their own codes:
+
+| code | meaning |
+|---|---|
+| `printer_not_found` | no printer of that name is installed (ERROR_INVALID_PRINTER_NAME, ERROR_PRINTER_NOT_FOUND) |
+| `access_denied` | Windows refused the printer to this app |
+| `spooler` | the Print Spooler is not running or refused the job (RPC errors, ERROR_SERVICE_NOT_ACTIVE, ERROR_SPL_NO_STARTDOC, ERROR_PRINTQ_FULL) |
+| `printer_offline` | the device is not ready or not connected (ERROR_NOT_READY, ERROR_DEVICE_NOT_CONNECTED) |
+| `io` | any other Win32 failure; `message` carries Windows' text and the error number |
+| `too_large` | the base64 payload is over 2 MB; nothing was sent |
+| `invalid` | empty printer name, empty or malformed base64 |
+| `unsupported` | not Windows |
+
+- `printers_list` → `[{ name, port, isDefault }]`: `EnumPrintersW(PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS, level 2)` with `GetDefaultPrinterW` for the default, which sorts first. `name` is what `print_raw` takes.
+- `print_raw` `{ printer, bytes, jobName? }` → `{ sent }`: `bytes` is base64 ESC/POS (the till's `receipt-escpos.ts`); `jobName` is the queue entry's name (default "DigitGlance receipt", one line, 120 characters). `OpenPrinterW`, `StartDocPrinterW` with datatype `RAW`, `StartPagePrinter`, `WritePrinter` until every byte is written, `EndPagePrinter`, `EndDocPrinter`, `ClosePrinter` on every path. A spooler accepting the job does not mean paper came out: a driver cannot be asked for status, so the till shows "sent" and relies on the test print.
+
+**Not verified on hardware.** No physical receipt printer was available: the
+commands compile, and the base64 and size guard, the error mapping and the
+contract test run without a printer. The first real print is checklist item
+13 in the web monorepo's `docs/trade/receipt-printing.md`.
 
 - **Device HTTP.** The API's CORS does not list the Tauri origins, so the till
   sends every device call (pair, ping, snapshot, changes, transactions,
