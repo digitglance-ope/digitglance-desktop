@@ -32,11 +32,15 @@
 // only; unrelated to the `store` Cargo feature, which is the Microsoft Store
 // flavour): an encrypted SQLite database plus Tauri commands for the till that
 // is bundled locally (till-dist/, DigitGlance Trade's `till` window). Those
-// commands, the till's device HTTP and its save dialog are granted by
-// capabilities/local-store.json and till.json to that window only; the remote
-// origin (the `backoffice` window and every Books/School window) still has no
-// IPC at all. See docs/LOCAL-STORE-API.md and src/till.rs.
+// commands, the till's device HTTP, its save dialog and its silent receipt
+// printing (`print` module: raw ESC/POS to a printer installed in Windows) are
+// granted by capabilities/local-store.json and till.json to that window only;
+// the remote origin (the `backoffice` window and every Books/School window)
+// still has no IPC at all. See docs/LOCAL-STORE-API.md, src/till.rs and
+// src/print.rs.
 
+#[cfg(desktop)]
+pub mod print;
 #[cfg(desktop)]
 pub mod store;
 #[cfg(desktop)]
@@ -123,6 +127,8 @@ pub fn run() {
         store::commands::audit_take_unsent,
         store::commands::audit_mark_sent,
         till::open_backoffice,
+        print::printers_list,
+        print::print_raw,
     ]);
 
     // Closing the till with unsent sales asks first (src/till.rs).
