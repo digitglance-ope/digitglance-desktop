@@ -1,6 +1,6 @@
 [package]
 name = "digitglance"
-version = "1.2.0"
+version = "1.2.1"
 description = "DigitGlance — unified desktop app (Invoice, POS & Books)"
 authors = ["Digitglance Reliance"]
 edition = "2021"
@@ -34,7 +34,12 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 # The bundled till: device HTTP from Rust (the API has no CORS for the Tauri
 # origins) and the save dialog / close confirmation.
-tauri-plugin-http = "2"
+# PINNED to the JavaScript half (@tauri-apps/plugin-http in the vendored till,
+# apps/till/package.json in the web repo). The two halves share a wire format
+# that 2.9.0 changed: a release built with Rust 2.9.0 against JS 2.8.3 refuses
+# every request the instant it is sent (trade-v1.2.0: pairing "could not be
+# reached"). Cargo.lock is committed for the same reason; bump both together.
+tauri-plugin-http = "=2.8.3"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
