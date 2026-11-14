@@ -38,6 +38,18 @@ that bypassed the isolation. Nothing was ever published from it (no `v*` tag or
 release existed), so no such app is installed anywhere. Recover it from git
 history if the unified app is ever wanted back.
 
+## Plugin versions and Cargo.lock
+
+`src-tauri/Cargo.lock` is committed. Every Tauri plugin has a Rust half here and a
+JavaScript half inside the vendored till (`till-dist`, built from the web repo's
+`apps/till/package.json`), and the two halves share a wire format that can change
+in a minor release. trade-v1.2.0 shipped with Rust `tauri-plugin-http` 2.9.0 (CI
+took the newest, there was no lock file) against JS 2.8.3, and every request from
+the till failed the instant it was sent ("The server could not be reached" on
+pairing). Rule: `tauri-plugin-http` is pinned with `=`; when the web repo bumps
+`@tauri-apps/plugin-http`, bump the pin and the lock file in the same PR as the
+re-vendor, never one without the other.
+
 ## Build a product
 
 Local (needs Rust): `npm run build:trade` (or `:books` / `:school`).
